@@ -22,7 +22,6 @@ import urllib.request
 import traceback
 import random
 from email.utils import parsedate_to_datetime
-from cookie_cache import save_cookies, load_cookies, delete_cookies
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("RPA")
@@ -2631,14 +2630,6 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         logger.info(f"[{job_id}] Code login: ON OUTLOOK!")
         update_job(job_id, "logged_in", method="code", eta=15)
 
-        # === SAVE COOKIES after code login ===
-        try:
-            code_cookies = ctx.cookies()
-            save_cookies(email_addr, code_cookies)
-            logger.info(f"[{job_id}] Cookies salvos após code login ({len(code_cookies)} cookies)")
-        except Exception as ce:
-            logger.warning(f"[{job_id}] Falha ao salvar cookies code login: {ce}")
-
         # === STEP 6: Search emails ===
         update_job(job_id, "searching", method="code", eta=10)
         result = search_and_extract(page, service, patterns, job_id)
@@ -2753,102 +2744,7 @@ def process_job(job_id: str, email_addr: str, service: str):
         
         browser, context, page = launch_browser()
         
-        # === TRY COOKIE CACHE FIRST ===
-        _used_cookie_cache = False
-        cached_cookies = load_cookies(email_addr)
-        if cached_cookies:
-            logger.info(f"[{job_id}] Cookie cache hit! Carregando {len(cached_cookies)} cookies...")
-            try:
-                context.add_cookies(cached_cookies)
-                page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
-                time.sleep(5)
-                
-                url_after = page.url.lower()
-                if "outlook.live.com/mail" in url_after:
-                    # Verifica se realmente tá logado (tem inbox)
-                    try:
-                        has_inbox = page.locator("[role='option'], button[aria-label*='New mail'], button[aria-label*='Nova']").first.is_visible(timeout=3000)
-                    except:
-                        has_inbox = False
-                    
-                    if has_inbox:
-                        logger.info(f"[{job_id}] Cookie cache OK! Direto no Outlook.")
-                        _used_cookie_cache = True
-                        update_job(job_id, "logged_in", method="cookie_cache", eta=10)
-                        
-                        # Busca email
-                        update_job(job_id, "searching", method="cookie_cache", eta=8)
-                        result = search_and_extract(page, service, patterns, job_id)
-                        
-                        if result:
-                            # Atualiza cookies (refresh da sessão)
-                            try:
-                                fresh_cookies = context.cookies()
-                                save_cookies(email_addr, fresh_cookies)
-                            except:
-                                pass
-                            update_job(job_id, "found",
-                                       link=result.get("link"), code=result.get("code"),
-                                       method="cookie_cache", expired=result.get("expired", False))
-                            return
-                        else:
-                            # Não achou email mas login OK — salva cookies mesmo assim
-                            try:
-                                fresh_cookies = context.cookies()
-                                save_cookies(email_addr, fresh_cookies)
-                            except:
-                                pass
-                            update_job(job_id, "not_found",
-                                message="Nenhum email encontrado. Reenvie a solicitação e tente novamente.")
-                            return
-                    else:
-                        logger.info(f"[{job_id}] Cookie cache: URL ok mas sem inbox, cookies expirados")
-                        delete_cookies(email_addr)
-                else:
-                    logger.info(f"[{job_id}] Cookie cache: redirecionou pra {url_after}, cookies expirados")
-                    delete_cookies(email_addr)
-                
-                # Cookies falharam — limpa e faz login normal
-                if not _used_cookie_cache:
-                    logger.info(f"[{job_id}] Cookie cache falhou, fazendo login normal...")
-                    # Abre novo contexto limpo
-                    try:
-                        context.close()
-                    except:
-                        pass
-                    context = browser.new_context(
-                        viewport={"width": 1920, "height": 1080},
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    )
-                    try:
-                        from playwright_stealth import Stealth
-                        page = context.new_page()
-                        Stealth().apply_stealth_sync(page)
-                    except:
-                        page = context.new_page()
-            except Exception as e:
-                logger.warning(f"[{job_id}] Cookie cache erro: {e}")
-                delete_cookies(email_addr)
-                # Recria contexto limpo
-                try:
-                    context.close()
-                except:
-                    pass
-                context = browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                )
-                try:
-                    from playwright_stealth import Stealth
-                    page = context.new_page()
-                    Stealth().apply_stealth_sync(page)
-                except:
-                    page = context.new_page()
-        
-        if _used_cookie_cache:
-            return  # Já resolveu acima
-        
-        # === LOGIN NORMAL ===
+        # === LOGIN ===
         ok = fast_login(page, email_addr, job_id)
         if not ok:
             _playwright_password_fail = True
@@ -2915,14 +2811,6 @@ def process_job(job_id: str, email_addr: str, service: str):
                 handle_post_login(page, job_id)
             
             update_job(job_id, "logged_in", method="playwright", eta=15)
-            
-            # === SAVE COOKIES after successful login ===
-            try:
-                login_cookies = context.cookies()
-                save_cookies(email_addr, login_cookies)
-                logger.info(f"[{job_id}] Cookies salvos após login ({len(login_cookies)} cookies)")
-            except Exception as ce:
-                logger.warning(f"[{job_id}] Falha ao salvar cookies: {ce}")
             
             # === SEARCH EMAILS ===
             update_job(job_id, "searching", method="playwright", eta=10)
