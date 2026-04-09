@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@font-face {
+  font-family: 'Bebas Neue';
+  src: url('/BebasNeue.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Netflix Sans';
+  src: local('Netflix Sans'), local('Helvetica Neue'), local('Helvetica');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@theme inline {
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
+  --color-background: #141414;
+  --color-foreground: #ffffff;
+  --color-card: #1a1a1a;
+  --color-card-foreground: #ffffff;
+  --color-popover: #1a1a1a;
+  --color-popover-foreground: #ffffff;
+  --color-primary: #E50914;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #222222;
+  --color-secondary-foreground: #ffffff;
+  --color-muted: #333333;
+  --color-muted-foreground: #B3B3B3;
+  --color-accent: #222222;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #E50914;
+  --color-border: #333333;
+  --color-input: #333333;
+  --color-ring: #E50914;
+  --color-netflix-red: #E50914;
+  --color-netflix-red-hover: #F40612;
+  --color-netflix-success: #46D369;
+  --color-netflix-warning: #F5A623;
+  --color-netflix-bg: #141414;
+  --color-netflix-surface: #1a1a1a;
+}
+
+body {
+  background-color: #141414;
+  color: #ffffff;
+  font-family: 'Netflix Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+}
+
+/* Netflix red button pulse */
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 9, 20, 0.4); }
+  50% { box-shadow: 0 0 0 12px rgba(229, 9, 20, 0); }
+}
+
+.pulse-red {
+  animation: pulse-red 2s ease-in-out infinite;
+}
+
+/* Spinner */
+@keyframes spin-netflix {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.spinner-netflix {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #333;
+  border-top-color: #E50914;
+  border-radius: 50%;
+  animation: spin-netflix 0.8s linear infinite;
+}
+
+/* Status step dots */
+@keyframes dot-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.dot-pulse {
+  animation: dot-pulse 1.5s ease-in-out infinite;
+}

@@ -1,0 +1,23 @@
+{
+  "name": "lklogins",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "wouter": "^3.9.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.4",
+    "tailwindcss": "^4.2.1",
+    "vite": "^7.3.1"
+  }
+}
