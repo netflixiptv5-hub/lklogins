@@ -727,23 +727,123 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
     return False
 
 
+def _try_skip_security_prompt(page, job_id: str) -> bool:
+    """
+    Try to skip 'Add security info' / 'Proteja sua conta' page.
+    Clicks 'Ignorar por enquanto' / 'Skip for now' / 'Remind me later' link,
+    then redirects to Outlook inbox.
+    Returns True if skipped successfully.
+    """
+    try:
+        body = page.inner_text("body").lower()
+    except:
+        return False
+
+    # Detect the "protect your account" / "add security info" page
+    is_protect_page = any(kw in body for kw in [
+        "proteja sua conta", "protect your account", "add security info",
+        "adicionar informações de segurança", "vamos proteger",
+        "let's secure your account", "help us protect",
+    ])
+    if not is_protect_page:
+        return False
+
+    logger.info(f"[{job_id}] Detected 'protect your account' page, trying to skip...")
+
+    # Try clicking skip links/buttons — multiple languages
+    SKIP_TEXTS = [
+        "Ignorar por enquanto", "ignorar por enquanto",
+        "Skip for now", "skip for now",
+        "Remind me later", "remind me later",
+        "Lembrar mais tarde", "lembrar mais tarde",
+        "Pular por enquanto", "pular por enquanto",
+        "I don't have any of these", "Não tenho nenhum desses",
+        "Cancel", "Cancelar",
+    ]
+
+    for skip_text in SKIP_TEXTS:
+        try:
+            # Try as link first (most common)
+            link = page.get_by_text(skip_text, exact=False)
+            if link.is_visible(timeout=800):
+                link.click(timeout=3000)
+                logger.info(f"[{job_id}] Clicked skip: '{skip_text}'")
+                time.sleep(3)
+
+                # Redirect to Outlook inbox
+                try:
+                    page.goto("https://outlook.live.com/mail/0/", timeout=20000, wait_until="domcontentloaded")
+                    time.sleep(4)
+                except:
+                    pass
+
+                if "outlook.live.com" in page.url.lower():
+                    logger.info(f"[{job_id}] Skip successful! Now in Outlook")
+                    return True
+                else:
+                    logger.info(f"[{job_id}] After skip, URL: {page.url[:100]}")
+                    # Try one more redirect
+                    try:
+                        page.goto("https://outlook.live.com/mail/0/", timeout=15000, wait_until="domcontentloaded")
+                        time.sleep(3)
+                    except:
+                        pass
+                    if "outlook.live.com" in page.url.lower():
+                        logger.info(f"[{job_id}] Skip successful on 2nd try!")
+                        return True
+                    return False
+        except:
+            continue
+
+    # Fallback: try clicking by CSS selectors (skip links often have specific IDs)
+    SKIP_SELECTORS = [
+        "#iShowSkip", "#skipLink", "#iCancel",
+        "a[id*='skip' i]", "a[id*='Skip' i]",
+        "button[id*='skip' i]", "button[id*='Skip' i]",
+        "#iLandingViewAction", "#iNext",
+    ]
+    for sel in SKIP_SELECTORS:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=800):
+                el.click(timeout=3000)
+                logger.info(f"[{job_id}] Clicked skip selector: {sel}")
+                time.sleep(3)
+                try:
+                    page.goto("https://outlook.live.com/mail/0/", timeout=20000, wait_until="domcontentloaded")
+                    time.sleep(4)
+                except:
+                    pass
+                if "outlook.live.com" in page.url.lower():
+                    logger.info(f"[{job_id}] Skip via selector successful!")
+                    return True
+        except:
+            continue
+
+    logger.warning(f"[{job_id}] Could not find skip link on protect page")
+    return False
+
+
 def handle_post_login(page, job_id: str) -> str:
     """
     Handle all post-login screens (stay signed in, privacy, abuse, verification).
     Returns: "ok", "abuse", "verification", "error"
     """
     # Quick dismiss common prompts
-    for _ in range(3):
+    for _ in range(5):
         url = page.url.lower()
         
         if "abuse" in url:
             return "abuse"
         
-        if "identity/confirm" in url or "proofs" in url:
-            return "verification"
-        
         if "outlook.live.com" in url:
             return "ok"
+        
+        if "identity/confirm" in url or "proofs" in url:
+            # === TRY TO SKIP "protect your account" page first ===
+            if _try_skip_security_prompt(page, job_id):
+                return "ok"
+            return "verification"
         
         # Try clicking dismiss buttons
         clicked = False
@@ -781,11 +881,18 @@ def handle_post_login(page, job_id: str) -> str:
     if "abuse" in url:
         return "abuse"
     if "identity" in url or "proofs" in url:
+        # One more try to skip
+        if _try_skip_security_prompt(page, job_id):
+            return "ok"
         return "verification"
     # Also detect verification by page content
     if "verify your email" in body or "verificar seu email" in body:
+        if _try_skip_security_prompt(page, job_id):
+            return "ok"
         return "verification"
     if "protect your account" in body or "proteja sua conta" in body:
+        if _try_skip_security_prompt(page, job_id):
+            return "ok"
         return "verification"
     
     return "ok"
@@ -2435,6 +2542,21 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         has_send_code = "send code" in body or "enviar código" in body
 
         if not has_send_code:
+            # Check if it's a "protect your account" page — try to skip it
+            if _try_skip_security_prompt(page, job_id):
+                logger.info(f"[{job_id}] Code login: skipped security prompt, now in Outlook!")
+                # We're in Outlook — go directly to search
+                update_job(job_id, "logged_in", method="code", eta=10)
+                update_job(job_id, "searching", method="code", eta=8)
+                result = search_and_extract(page, service, patterns, job_id)
+                if result:
+                    update_job(job_id, "found",
+                        link=result.get("link"), code=result.get("code"),
+                        method="code", expired=result.get("expired", False))
+                else:
+                    update_job(job_id, "not_found",
+                        message="Nenhum email encontrado. Reenvie a solicitação e tente novamente.")
+                return True  # Handled
             logger.info(f"[{job_id}] Code login: not on code page, aborting")
             return False  # Let other methods try
 
