@@ -122,6 +122,38 @@ def cleanup_old_logs(max_age_hours: int = 24):
                 del _memory_logs[jid]
 
 
+def get_recent_jobs(limit: int = 20) -> list:
+    """Retorna os últimos jobs com primeira e última mensagem."""
+    conn = _get_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT job_id, 
+                           MIN(ts) as first_ts, 
+                           MAX(ts) as last_ts,
+                           COUNT(*) as log_count,
+                           (SELECT message FROM lklogins_job_logs j2 WHERE j2.job_id = j1.job_id ORDER BY ts ASC LIMIT 1) as first_msg,
+                           (SELECT message FROM lklogins_job_logs j2 WHERE j2.job_id = j1.job_id ORDER BY ts DESC LIMIT 1) as last_msg
+                    FROM lklogins_job_logs j1
+                    GROUP BY job_id
+                    ORDER BY MAX(ts) DESC
+                    LIMIT %s
+                """, (limit,))
+                rows = cur.fetchall()
+                return [{"job_id": r[0], "first_ts": r[1], "last_ts": r[2], "log_count": r[3], "first_msg": r[4], "last_msg": r[5]} for r in rows]
+        except Exception as e:
+            logger.error(f"[job_logger] get_recent_jobs erro: {e}")
+            return []
+
+    # Fallback memória
+    result = []
+    for jid, entries in sorted(_memory_logs.items(), key=lambda x: x[1][-1]["ts"] if x[1] else 0, reverse=True)[:limit]:
+        if entries:
+            result.append({"job_id": jid, "first_ts": entries[0]["ts"], "last_ts": entries[-1]["ts"], "log_count": len(entries), "first_msg": entries[0]["message"], "last_msg": entries[-1]["message"]})
+    return result
+
+
 class JobLogHandler(logging.Handler):
     """
     Handler que intercepta logs do logger 'rpa' e salva por job_id.

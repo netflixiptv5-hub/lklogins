@@ -60,6 +60,16 @@ app.get("/api/status/:jobId", (req, res) => {
   });
 });
 
+app.get("/api/logs-recent", async (req, res) => {
+  try {
+    const r = await fetch(`${WORKER_URL}/logs-recent`);
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.json({ ok: false, error: "Worker indisponível." });
+  }
+});
+
 app.get("/api/logs/:jobId", async (req, res) => {
   try {
     const r = await fetch(`${WORKER_URL}/logs/${req.params.jobId}`);
