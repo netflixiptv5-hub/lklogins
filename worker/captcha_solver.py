@@ -638,6 +638,14 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
     que fica ao lado esquerdo do botão "Pressione e segure" (#px-captcha).
     Está DENTRO do iframe.
     """
+    # === DEBUG: Take screenshot before trying anything ===
+    try:
+        screenshot_path = f"/tmp/captcha_debug_{job_id}.png"
+        page.screenshot(path=screenshot_path, full_page=False)
+        _log(job_id, f"PW: Screenshot saved to {screenshot_path}")
+    except Exception as e:
+        _log(job_id, f"PW: Screenshot failed: {str(e)[:100]}")
+    
     # === STRATEGY 1: Buscar dentro do iframe via frame_locator ===
     if frame_locator is not None:
         # Seletores conhecidos do botão de acessibilidade do PX
@@ -886,6 +894,33 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
     # É um ícone circular ~35px de diâmetro
     try:
         _log(job_id, "PW: Strategy 5 — clicking accessibility by coordinates (left of #px-captcha)...")
+        
+        # Take a zoomed screenshot of the captcha area
+        try:
+            px_area = None
+            if frame_locator:
+                try:
+                    px_area = frame_locator.locator("#px-captcha").bounding_box(timeout=3000)
+                except:
+                    pass
+            if not px_area:
+                try:
+                    px_area = page.locator("#px-captcha").bounding_box()
+                except:
+                    pass
+            if px_area:
+                # Clip area: 100px margin left, 50px margin top/bottom, 50px margin right
+                clip_x = max(0, px_area['x'] - 100)
+                clip_y = max(0, px_area['y'] - 50)
+                clip_w = px_area['width'] + 150
+                clip_h = px_area['height'] + 100
+                page.screenshot(
+                    path=f"/tmp/captcha_debug_{job_id}_zoomed.png",
+                    clip={"x": clip_x, "y": clip_y, "width": clip_w, "height": clip_h}
+                )
+                _log(job_id, f"PW: Zoomed screenshot saved (clip: x={clip_x:.0f} y={clip_y:.0f} w={clip_w:.0f} h={clip_h:.0f})")
+        except Exception as e:
+            _log(job_id, f"PW: Zoomed screenshot failed: {str(e)[:100]}")
         
         # Pegar box do px-captcha (pode estar no iframe ou na página)
         px_box = None

@@ -3189,6 +3189,28 @@ class JobHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+        elif self.path.startswith("/screenshot/"):
+            job_id = self.path.split("/screenshot/")[1].strip("/")
+            screenshot_path = f"/tmp/captcha_debug_{job_id}.png"
+            try:
+                if os.path.exists(screenshot_path):
+                    with open(screenshot_path, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": False, "error": "No screenshot found"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
         elif self.path == "/logs-recent":
             try:
                 from job_logger import get_recent_jobs

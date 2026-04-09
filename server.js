@@ -80,6 +80,22 @@ app.get("/api/logs/:jobId", async (req, res) => {
   }
 });
 
+app.get("/api/screenshot/:jobId", async (req, res) => {
+  try {
+    const r = await fetch(`${WORKER_URL}/screenshot/${req.params.jobId}`);
+    if (r.ok) {
+      res.set("Content-Type", "image/png");
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.send(buf);
+    } else {
+      const data = await r.json().catch(() => ({ error: "No screenshot" }));
+      res.status(404).json(data);
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Worker unavailable" });
+  }
+});
+
 app.post("/api/update", (req, res) => {
   const { jobId, status, link, code, message, method, eta, expired } = req.body;
   const job = jobs.get(jobId);
