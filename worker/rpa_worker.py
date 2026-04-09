@@ -729,98 +729,55 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
 
 def _try_skip_security_prompt(page, job_id: str) -> bool:
     """
-    Try to skip 'Add security info' / 'Proteja sua conta' page.
-    Clicks 'Ignorar por enquanto' / 'Skip for now' / 'Remind me later' link,
-    then redirects to Outlook inbox.
-    Returns True if skipped successfully.
+    Skip 'Add security info' / 'Proteja sua conta' / 'Help us protect' page.
+    The session is already authenticated — just redirect to Outlook inbox.
+    Returns True if we're now in Outlook.
     """
     try:
         body = page.inner_text("body").lower()
     except:
-        return False
+        body = ""
 
-    # Detect the "protect your account" / "add security info" page
-    is_protect_page = any(kw in body for kw in [
-        "proteja sua conta", "protect your account", "add security info",
-        "adicionar informações de segurança", "vamos proteger",
-        "let's secure your account", "help us protect",
-    ])
+    url = page.url.lower()
+
+    # Detect the "protect your account" / "add security info" / identity confirm page
+    is_protect_page = (
+        "identity/confirm" in url or "proofs" in url or
+        any(kw in body for kw in [
+            "proteja sua conta", "protect your account", "add security info",
+            "adicionar informações de segurança", "vamos proteger",
+            "let's secure your account", "help us protect",
+        ])
+    )
     if not is_protect_page:
         return False
 
-    logger.info(f"[{job_id}] Detected 'protect your account' page, trying to skip...")
+    logger.info(f"[{job_id}] Detected 'protect your account' page — redirecting to Outlook directly...")
 
-    # Try clicking skip links/buttons — multiple languages
-    SKIP_TEXTS = [
-        "Ignorar por enquanto", "ignorar por enquanto",
-        "Skip for now", "skip for now",
-        "Remind me later", "remind me later",
-        "Lembrar mais tarde", "lembrar mais tarde",
-        "Pular por enquanto", "pular por enquanto",
-        "I don't have any of these", "Não tenho nenhum desses",
-        "Cancel", "Cancelar",
-    ]
+    # Session is already authenticated. Just go to Outlook.
+    try:
+        page.goto("https://outlook.live.com/mail/0/", timeout=20000, wait_until="domcontentloaded")
+        time.sleep(4)
+    except:
+        pass
 
-    for skip_text in SKIP_TEXTS:
-        try:
-            # Try as link first (most common)
-            link = page.get_by_text(skip_text, exact=False)
-            if link.is_visible(timeout=800):
-                link.click(timeout=3000)
-                logger.info(f"[{job_id}] Clicked skip: '{skip_text}'")
-                time.sleep(3)
+    if "outlook.live.com" in page.url.lower():
+        logger.info(f"[{job_id}] Skip successful! Now in Outlook inbox")
+        return True
 
-                # Redirect to Outlook inbox
-                try:
-                    page.goto("https://outlook.live.com/mail/0/", timeout=20000, wait_until="domcontentloaded")
-                    time.sleep(4)
-                except:
-                    pass
+    # Second attempt
+    logger.info(f"[{job_id}] First redirect didn't work (URL: {page.url[:80]}), trying again...")
+    try:
+        page.goto("https://outlook.live.com/mail/0/", timeout=15000, wait_until="domcontentloaded")
+        time.sleep(4)
+    except:
+        pass
 
-                if "outlook.live.com" in page.url.lower():
-                    logger.info(f"[{job_id}] Skip successful! Now in Outlook")
-                    return True
-                else:
-                    logger.info(f"[{job_id}] After skip, URL: {page.url[:100]}")
-                    # Try one more redirect
-                    try:
-                        page.goto("https://outlook.live.com/mail/0/", timeout=15000, wait_until="domcontentloaded")
-                        time.sleep(3)
-                    except:
-                        pass
-                    if "outlook.live.com" in page.url.lower():
-                        logger.info(f"[{job_id}] Skip successful on 2nd try!")
-                        return True
-                    return False
-        except:
-            continue
+    if "outlook.live.com" in page.url.lower():
+        logger.info(f"[{job_id}] Skip successful on 2nd try!")
+        return True
 
-    # Fallback: try clicking by CSS selectors (skip links often have specific IDs)
-    SKIP_SELECTORS = [
-        "#iShowSkip", "#skipLink", "#iCancel",
-        "a[id*='skip' i]", "a[id*='Skip' i]",
-        "button[id*='skip' i]", "button[id*='Skip' i]",
-        "#iLandingViewAction", "#iNext",
-    ]
-    for sel in SKIP_SELECTORS:
-        try:
-            el = page.locator(sel).first
-            if el.is_visible(timeout=800):
-                el.click(timeout=3000)
-                logger.info(f"[{job_id}] Clicked skip selector: {sel}")
-                time.sleep(3)
-                try:
-                    page.goto("https://outlook.live.com/mail/0/", timeout=20000, wait_until="domcontentloaded")
-                    time.sleep(4)
-                except:
-                    pass
-                if "outlook.live.com" in page.url.lower():
-                    logger.info(f"[{job_id}] Skip via selector successful!")
-                    return True
-        except:
-            continue
-
-    logger.warning(f"[{job_id}] Could not find skip link on protect page")
+    logger.warning(f"[{job_id}] Could not redirect to Outlook. URL: {page.url[:100]}")
     return False
 
 
