@@ -725,29 +725,46 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
     """
     Quando MS mostra 'proteja sua conta' / 'identity/confirm' / 'proofs',
     ao invés de tentar clicar botões, vai direto pro Outlook.
-    Retorna True se redirecionou com sucesso.
+    Retorna True se redirecionou com sucesso E tá realmente no Outlook mail.
     """
-    url = page.url.lower()
-    if any(x in url for x in ["identity/confirm", "proofs", "proteja", "protect"]):
-        logger.info(f"[{job_id}] Security prompt detected ({url}), redirecting to Outlook...")
+    def _is_security_page(u):
+        return any(x in u for x in ["identity/confirm", "proofs", "proteja", "protect"])
+    
+    def _try_redirect():
+        logger.info(f"[{job_id}] Security prompt, tentando redirect pro Outlook...")
         try:
             page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
-            time.sleep(5)
-            if "outlook.live.com" in page.url.lower():
-                logger.info(f"[{job_id}] Redirect to Outlook OK!")
+            time.sleep(6)
+            final_url = page.url.lower()
+            # Verifica se REALMENTE tá no Outlook (não redirecionou pra marketing/login)
+            if "outlook.live.com/mail" in final_url:
+                # Verifica se tem elementos do Outlook (search box, mail list, etc)
+                try:
+                    has_inbox = page.locator("[role='option'], [aria-label*='earch'], [aria-label*='esquis'], button[aria-label*='New mail'], button[aria-label*='Nova']").first.is_visible(timeout=3000)
+                    if has_inbox:
+                        logger.info(f"[{job_id}] Redirect to Outlook OK! Inbox confirmed.")
+                        return True
+                except:
+                    pass
+                # URL parece ok mas não confirmou inbox — aceita mesmo assim
+                logger.info(f"[{job_id}] Redirect to Outlook OK (URL match)")
                 return True
+            else:
+                logger.warning(f"[{job_id}] Redirect falhou, caiu em: {final_url}")
+                return False
         except Exception as e:
-            logger.warning(f"[{job_id}] Redirect failed: {e}")
+            logger.warning(f"[{job_id}] Redirect exception: {e}")
+            return False
+
+    url = page.url.lower()
+    if _is_security_page(url):
+        return _try_redirect()
+    
     # Also check body text
     try:
         body = page.inner_text("body").lower()
         if any(x in body for x in ["proteja sua conta", "protect your account", "verify your identity"]):
-            logger.info(f"[{job_id}] Security prompt in body, redirecting to Outlook...")
-            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
-            time.sleep(5)
-            if "outlook.live.com" in page.url.lower():
-                logger.info(f"[{job_id}] Redirect to Outlook OK!")
-                return True
+            return _try_redirect()
     except:
         pass
     return False
@@ -2796,9 +2813,10 @@ def process_job(job_id: str, email_addr: str, service: str):
                 update_job(job_id, "connecting", eta=50,
                            message="Verificação Microsoft. Aguarde...")
                 if not handle_verification(page, job_id, username):
-                    update_job(job_id, "error",
-                        message="Verificação falhou. Tente novamente.")
-                    return
+                    # Verificação falhou — tenta code login como fallback
+                    logger.info(f"[{job_id}] Verificação falhou, vai tentar code login...")
+                    _playwright_password_fail = True
+                    raise Exception("verification_failed_try_code")
                 handle_post_login(page, job_id)
             
             update_job(job_id, "logged_in", method="playwright", eta=15)
