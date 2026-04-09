@@ -623,7 +623,7 @@ def process_job_imap_direct(job_id: str, email_addr: str, service: str):
                 
                 result = extract_email_content(body, service)
                 if result:
-                    expired = _is_email_expired(msg)
+                    expired = False
                     logger.info(f"[{job_id}] IMAP FOUND: {result} (expired={expired})")
                     mail.logout()
                     update_job(job_id, "found",
@@ -1504,30 +1504,6 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
                     pass
                 result = extract_netflix_link(body_html, service)
                 if result:
-                    # Calcular expired baseado na hora do email
-                    expired = False
-                    time_str = email_times.get(idx, "")
-                    if time_str:
-                        try:
-                            import re as _re3
-                            tm = _re3.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', time_str, _re3.IGNORECASE)
-                            if tm:
-                                h, m = int(tm.group(1)), int(tm.group(2))
-                                ampm = (tm.group(3) or "").lower()
-                                if ampm == "pm" and h != 12:
-                                    h += 12
-                                elif ampm == "am" and h == 12:
-                                    h = 0
-                                from datetime import datetime as _dt
-                                email_dt = _dt.now().replace(hour=h, minute=m, second=0, microsecond=0)
-                                age_min = (_dt.now() - email_dt).total_seconds() / 60
-                                if age_min < 0:
-                                    age_min += 1440  # virou o dia
-                                expired = age_min > 12
-                                logger.info(f"[{job_id}] Email time={time_str}, age={age_min:.0f}min, expired={expired}")
-                        except Exception as te:
-                            logger.warning(f"[{job_id}] Could not parse email time: {te}")
-                    result["expired"] = expired
                     logger.info(f"[{job_id}] FOUND: {result}")
                     return result
                 else:
@@ -1650,7 +1626,7 @@ def process_job_imap_cached(job_id: str, email_addr: str, service: str, mail) ->
 
                         result = extract_email_content(body, service)
                         if result:
-                            expired = _is_email_expired(msg, SEARCH_MINUTES)
+                            expired = False
                             if result.get("link"):
                                 update_job(job_id, "found", link=result["link"], method="imap", expired=expired)
                             elif result.get("code"):
@@ -1685,7 +1661,7 @@ def process_job_imap_cached(job_id: str, email_addr: str, service: str, mail) ->
                                     body += payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
                             result = extract_email_content(body, service)
                             if result:
-                                expired = _is_email_expired(msg, SEARCH_MINUTES)
+                                expired = False
                                 if result.get("link"):
                                     update_job(job_id, "found", link=result["link"], method="imap", expired=expired)
                                 elif result.get("code"):
@@ -1875,37 +1851,15 @@ def process_job_api(job_id: str, email_addr: str, service: str) -> bool:
                         subject = msg.get("Subject", "")
                         received = msg.get("DateTimeReceived", "") or msg.get("DateTimeSent", "") or ""
 
-                        # Filtra emails mais antigos que SEARCH_MINUTES
-                        if received:
-                            try:
-                                from datetime import timezone
-                                recv_dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
-                                age_minutes = (datetime.now(timezone.utc) - recv_dt).total_seconds() / 60
-                                if age_minutes > SEARCH_MINUTES:
-                                    logger.info(f"[{job_id}] API skip email antigo ({age_minutes:.0f}min): '{subject}'")
-                                    continue
-                            except:
-                                pass  # Se não conseguir parsear a data, processa mesmo assim
-
-                        logger.info(f"[{job_id}] API email #{i}: '{subject}' ({len(body_html)} chars)")
+                        logger.info(f"[{job_id}] API email: '{subject}' ({len(body_html)} chars)")
                         
                         if body_html:
                             result = extract_email_content(body_html, service)
                             if result:
-                                # Check if email is close to expiring (>12 min = warn)
-                                expired = False
-                                if received:
-                                    try:
-                                        from datetime import timezone as tz
-                                        recv_dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
-                                        age_min = (datetime.now(tz.utc) - recv_dt).total_seconds() / 60
-                                        expired = age_min > 12
-                                    except:
-                                        pass
-                                logger.info(f"[{job_id}] API FOUND: {result} (expired={expired})")
+                                logger.info(f"[{job_id}] API FOUND: {result}")
                                 update_job(job_id, "found",
                                     link=result.get("link"), code=result.get("code"),
-                                    method="api", expired=expired)
+                                    method="api")
                                 return True
                 except Exception as e:
                     logger.error(f"[{job_id}] API GetItem error: {e}")
@@ -2250,7 +2204,7 @@ def process_job_gmail_imap(job_id: str, email_addr: str, service: str, app_passw
 
                 result = extract_email_content(body, service)
                 if result:
-                    expired = _is_email_expired(msg, SEARCH_MINUTES)
+                    expired = False
                     logger.info(f"[{job_id}] Gmail IMAP FOUND: {result} (expired={expired})")
                     mail.logout()
                     update_job(job_id, "found", link=result.get("link"), code=result.get("code"), method="imap", expired=expired)
