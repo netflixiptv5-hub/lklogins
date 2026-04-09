@@ -630,76 +630,113 @@ def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_
 
 # ==================== PLAYWRIGHT-BASED SOLVER ====================
 
-def _find_accessibility_button(page, frame, job_id):
-    """Find the accessibility icon button inside the CAPTCHA frame or page."""
-    # O ícone de acessibilidade fica DENTRO do iframe, ao lado do #px-captcha
-    # Geralmente é um <button> ou <div> com aria-label de acessibilidade
-    selectors = [
-        "#px-captcha-accessibility",
-        "[aria-label*='accessibility']",
-        "[aria-label*='acessib']",
-        "[aria-label*='Accessible']",
-        "button.accessibility",
-        ".accessibility-icon",
-        ".px-accessibility",
-        "a[href*='accessibility']",
-        # PX usa um SVG/ícone clicável ao lado do botão
-        "#px-captcha ~ button",
-        "#px-captcha ~ div[role='button']",
-        "#px-captcha ~ a",
-        # Tentar por posição: elementos clicáveis perto do captcha
-        "[data-testid*='access']",
-        "button:not(#px-captcha)",
-    ]
+def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
+    """
+    Find the accessibility icon button inside the CAPTCHA iframe.
     
-    # Tentar dentro do frame primeiro
-    if frame is not None:
-        for sel in selectors:
+    O botão de acessibilidade do PerimeterX é um pequeno ícone (boneco azul)
+    que fica ao lado esquerdo do botão "Pressione e segure" (#px-captcha).
+    Está DENTRO do iframe.
+    """
+    # === STRATEGY 1: Buscar dentro do iframe via frame_locator ===
+    if frame_locator is not None:
+        # Seletores conhecidos do botão de acessibilidade do PX
+        frame_selectors = [
+            "#px-captcha-accessibility",
+            "[aria-label*='ccessib']",  # accessibility / acessibilidade
+            "[aria-label*='Accessible']",
+            ".accessibility-icon",
+            ".px-accessibility",
+            "button.accessibility",
+            # PX coloca o ícone como irmão do #px-captcha
+            "#px-captcha ~ button",
+            "#px-captcha ~ div[role='button']",
+            "#px-captcha ~ a",
+            "#px-captcha ~ div > button",
+            # SVG de acessibilidade
+            "svg[aria-label*='ccessib']",
+            "img[alt*='ccessib']",
+            # Genérico: qualquer botão que não é o px-captcha
+            "button:not(#px-captcha)",
+            "div[role='button']:not(#px-captcha)",
+            "a:not([href=''])",
+        ]
+        
+        for sel in frame_selectors:
             try:
-                elem = frame.locator(sel).first
-                if elem.is_visible(timeout=1500):
-                    _log(job_id, f"PW: Accessibility button found in frame via '{sel}'")
-                    return elem, "frame"
+                elem = frame_locator.locator(sel).first
+                if elem.is_visible(timeout=2000):
+                    box = elem.bounding_box()
+                    # O botão de acessibilidade é pequeno (< 80px wide) e fica à esquerda do px-captcha
+                    if box and box['width'] < 120 and box['height'] < 120:
+                        _log(job_id, f"PW: Accessibility found in iframe via '{sel}' box={box}")
+                        return elem, "frame"
+                    else:
+                        _log(job_id, f"PW: '{sel}' visible but too big ({box}), skipping")
             except:
                 continue
         
-        # Tentar achar por imagem/SVG de acessibilidade
+        # Log iframe content for debugging
         try:
-            # Buscar qualquer elemento clicável que NÃO seja o #px-captcha
-            all_buttons = frame.locator("button, [role='button'], a, [onclick]")
-            count = all_buttons.count()
-            _log(job_id, f"PW: {count} clickable elements in frame")
-            for i in range(count):
-                elem = all_buttons.nth(i)
-                try:
-                    tag = elem.evaluate("el => el.tagName")
-                    eid = elem.evaluate("el => el.id || ''")
-                    cls = elem.evaluate("el => el.className || ''")
-                    aria = elem.evaluate("el => el.getAttribute('aria-label') || ''")
-                    box = elem.bounding_box()
-                    _log(job_id, f"  frame clickable[{i}]: tag={tag} id={eid} class={cls[:60]} aria={aria[:40]} box={box}")
-                    if eid != "px-captcha" and box and box['width'] > 10 and box['width'] < 100:
-                        _log(job_id, f"  → Possible accessibility button! (small button that's not px-captcha)")
-                        return elem, "frame"
-                except:
-                    continue
+            # Pegar o HTML do iframe pra entender a estrutura
+            iframe_html = frame_locator.locator("body").inner_html(timeout=3000)
+            _log(job_id, f"PW: iframe HTML (500): {iframe_html[:500]}")
         except Exception as e:
-            _log(job_id, f"PW: Error scanning frame elements: {str(e)[:100]}")
+            _log(job_id, f"PW: Couldn't read iframe HTML: {str(e)[:80]}")
     
-    # Tentar na página principal
-    for sel in selectors:
-        try:
-            elem = page.locator(sel).first
-            if elem.is_visible(timeout=1000):
-                _log(job_id, f"PW: Accessibility button found in page via '{sel}'")
-                return elem, "page"
-        except:
-            continue
+    # === STRATEGY 2: Buscar via page.frames() (acessa os frames reais) ===
+    try:
+        for frame_obj in page.frames:
+            frame_url = frame_obj.url.lower()
+            if any(k in frame_url for k in ['hsprotect', 'enforcement', 'captcha', 'perimeterx', 'px-cdn']):
+                _log(job_id, f"PW: Scanning real frame: {frame_url[:80]}")
+                
+                # Listar TODOS os elementos visíveis no frame
+                try:
+                    all_els = frame_obj.query_selector_all("*")
+                    visible_count = 0
+                    for el in all_els:
+                        try:
+                            box = el.bounding_box()
+                            if box and box['width'] > 5 and box['height'] > 5:
+                                visible_count += 1
+                                tag = el.evaluate("el => el.tagName")
+                                eid = el.evaluate("el => el.id || ''")
+                                cls = el.evaluate("el => (el.className || '').toString().substring(0, 60)")
+                                aria = el.evaluate("el => el.getAttribute('aria-label') || ''")
+                                
+                                if visible_count <= 15:  # Log first 15 visible elements
+                                    _log(job_id, f"  frame el: <{tag}> id={eid} class={cls[:40]} aria={aria[:30]} size={box['width']:.0f}x{box['height']:.0f}")
+                                
+                                # Detectar botão de acessibilidade:
+                                # - Não é o #px-captcha
+                                # - É pequeno (ícone)
+                                # - Está perto do px-captcha
+                                is_acc = False
+                                if 'ccessib' in aria.lower() or 'ccessib' in cls.lower():
+                                    is_acc = True
+                                elif eid != 'px-captcha' and tag in ['BUTTON', 'A', 'DIV'] and box['width'] < 80 and box['height'] < 80 and box['width'] > 15:
+                                    # Pequeno e clicável — provável botão de acessibilidade
+                                    is_acc = True
+                                
+                                if is_acc:
+                                    _log(job_id, f"PW: → ACCESSIBILITY BUTTON via frame scan! <{tag}> id={eid} size={box['width']:.0f}x{box['height']:.0f}")
+                                    # Converter ElementHandle pra Locator-like que podemos clicar
+                                    return el, "element_handle"
+                        except:
+                            continue
+                    
+                    _log(job_id, f"PW: {visible_count} visible elements in frame, no accessibility button found")
+                except Exception as e:
+                    _log(job_id, f"PW: Error scanning frame: {str(e)[:100]}")
+    except Exception as e:
+        _log(job_id, f"PW: Error iterating page.frames: {str(e)[:100]}")
     
+    _log(job_id, "PW: Accessibility button NOT found anywhere", "warning")
     return None, None
 
 
-def _try_accessible_challenge(page, frame, iframe_handle, job_id):
+def _try_accessible_challenge(page, frame_locator, iframe_handle, job_id):
     """
     Try the accessible challenge flow:
     1. Click accessibility icon
@@ -711,30 +748,72 @@ def _try_accessible_challenge(page, frame, iframe_handle, job_id):
     _log(job_id, "PW: Trying ACCESSIBLE challenge flow...")
     
     # Step 1: Find and click accessibility button
-    acc_btn, location = _find_accessibility_button(page, frame, job_id)
+    acc_btn, location = _find_accessibility_button(page, frame_locator, iframe_handle, job_id)
     
     if not acc_btn:
-        _log(job_id, "PW: Accessibility button NOT found", "warning")
         return False
     
+    # Click the accessibility button
     try:
-        acc_btn.click(timeout=5000)
-        _log(job_id, "PW: Clicked accessibility button!")
-    except Exception as e:
-        _log(job_id, f"PW: Failed to click accessibility button: {str(e)[:100]}", "warning")
-        # Tentar via coordenadas
-        try:
+        if location == "element_handle":
+            # ElementHandle from page.frames scan
             box = acc_btn.bounding_box()
             if box:
+                # Clicar via mouse.click nas coordenadas (mais confiável pra ElementHandle)
                 page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                _log(job_id, f"PW: Clicked accessibility via coordinates ({box['x']:.0f}, {box['y']:.0f})")
-        except:
-            return False
+                _log(job_id, f"PW: Clicked accessibility via coords ({box['x'] + box['width']/2:.0f}, {box['y'] + box['height']/2:.0f})")
+            else:
+                acc_btn.click()
+                _log(job_id, "PW: Clicked accessibility ElementHandle directly")
+        elif location == "frame":
+            # FrameLocator element
+            try:
+                acc_btn.click(timeout=5000)
+                _log(job_id, "PW: Clicked accessibility in frame!")
+            except:
+                box = acc_btn.bounding_box()
+                if box:
+                    page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                    _log(job_id, f"PW: Clicked accessibility via coords fallback")
+                else:
+                    _log(job_id, "PW: Could not click accessibility button", "warning")
+                    return False
+        else:
+            acc_btn.click(timeout=5000)
+            _log(job_id, "PW: Clicked accessibility button!")
+    except Exception as e:
+        _log(job_id, f"PW: Failed to click accessibility: {str(e)[:100]}", "warning")
+        return False
     
     time.sleep(2)
     
     # Step 2: Wait for the bar to auto-fill (up to 30s)
     _log(job_id, "PW: Waiting for accessible bar to fill...")
+    
+    # Helper to get px-captcha text (try multiple methods)
+    def _get_px_text():
+        # Method 1: via frame_locator
+        if frame_locator:
+            try:
+                return frame_locator.locator("#px-captcha").inner_text(timeout=1000)
+            except:
+                pass
+        # Method 2: via page.frames
+        try:
+            for f in page.frames:
+                fu = f.url.lower()
+                if any(k in fu for k in ['hsprotect', 'enforcement', 'captcha', 'perimeterx']):
+                    el = f.query_selector("#px-captcha")
+                    if el:
+                        return el.inner_text()
+        except:
+            pass
+        # Method 3: inline
+        try:
+            return page.locator("#px-captcha").inner_text(timeout=500)
+        except:
+            pass
+        return ""
     
     for wait_i in range(60):  # Check every 0.5s, up to 30s
         time.sleep(0.5)
@@ -748,58 +827,66 @@ def _try_accessible_challenge(page, frame, iframe_handle, job_id):
             pass
         
         # Check for "Click again" / "Clique novamente" text
-        try:
-            if frame:
-                px_text = frame.locator("#px-captcha").inner_text(timeout=1000)
-            else:
-                px_text = page.locator("#px-captcha").inner_text(timeout=1000)
-            
-            px_text_lower = px_text.lower().strip()
-            
-            if any(t in px_text_lower for t in ["click", "clique", "tap", "toque"]):
-                _log(job_id, f"PW: Bar filled! Text: '{px_text}' — clicking now!")
-                
-                # Step 3: Click the button
-                try:
-                    if frame:
-                        px_btn = frame.locator("#px-captcha")
-                    else:
-                        px_btn = page.locator("#px-captcha")
-                    
-                    px_btn.click(timeout=5000)
-                    _log(job_id, "PW: Clicked #px-captcha after fill!")
-                except:
-                    # Fallback: click via coordinates
-                    try:
-                        if frame:
-                            box = frame.locator("#px-captcha").bounding_box()
-                        else:
-                            box = page.locator("#px-captcha").bounding_box()
-                        if box:
-                            page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                            _log(job_id, "PW: Clicked via coordinates after fill!")
-                    except:
-                        pass
-                
-                # Wait for solve
-                for solve_wait in range(20):
-                    time.sleep(2)
-                    try:
-                        if "abuse" not in page.url.lower():
-                            _log(job_id, f"PW: ✓ Accessible challenge SOLVED! ({solve_wait*2}s after click)")
-                            return True
-                    except:
-                        pass
-                
-                _log(job_id, "PW: Clicked but still on abuse page...", "warning")
-                return False
-                
-        except:
-            pass
+        px_text = _get_px_text()
+        px_text_lower = px_text.lower().strip()
         
-        # Every 5 seconds, log progress
+        if px_text_lower and any(t in px_text_lower for t in ["click", "clique", "tap", "toque", "again", "novamente"]):
+            _log(job_id, f"PW: Bar filled! Text: '{px_text}' — clicking now!")
+            
+            # Step 3: Click the button
+            clicked = False
+            # Try via frame_locator
+            if frame_locator:
+                try:
+                    frame_locator.locator("#px-captcha").click(timeout=5000)
+                    _log(job_id, "PW: Clicked #px-captcha via frame_locator!")
+                    clicked = True
+                except:
+                    pass
+            # Try via page.frames
+            if not clicked:
+                try:
+                    for f in page.frames:
+                        fu = f.url.lower()
+                        if any(k in fu for k in ['hsprotect', 'enforcement', 'captcha', 'perimeterx']):
+                            el = f.query_selector("#px-captcha")
+                            if el:
+                                box = el.bounding_box()
+                                if box:
+                                    page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                                    _log(job_id, "PW: Clicked #px-captcha via frame coords!")
+                                    clicked = True
+                                    break
+                except:
+                    pass
+            # Try inline
+            if not clicked:
+                try:
+                    page.locator("#px-captcha").click(timeout=3000)
+                    _log(job_id, "PW: Clicked #px-captcha inline!")
+                    clicked = True
+                except:
+                    pass
+            
+            if not clicked:
+                _log(job_id, "PW: Could not click #px-captcha after fill!", "warning")
+            
+            # Wait for solve
+            for solve_wait in range(20):
+                time.sleep(2)
+                try:
+                    if "abuse" not in page.url.lower():
+                        _log(job_id, f"PW: ✓ Accessible challenge SOLVED! ({solve_wait*2}s after click)")
+                        return True
+                except:
+                    pass
+            
+            _log(job_id, "PW: Clicked but still on abuse page...", "warning")
+            return False
+        
+        # Log progress
         if wait_i % 10 == 9:
-            _log(job_id, f"PW: Still waiting for bar to fill... ({(wait_i+1)*0.5:.0f}s)")
+            _log(job_id, f"PW: Still waiting for bar to fill... ({(wait_i+1)*0.5:.0f}s) text='{px_text_lower[:50]}'")
     
     _log(job_id, "PW: Accessible bar didn't fill in 30s", "warning")
     return False
@@ -972,7 +1059,7 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
             
             # Use CDP for mouse events (less detectable)
             try:
-                cdp = page.context.browser.new_browser_cdp_session()
+                cdp = page.context.new_cdp_session(page)
                 
                 cdp.send("Input.dispatchMouseEvent", {
                     "type": "mouseMoved", "x": int(cx), "y": int(cy),
