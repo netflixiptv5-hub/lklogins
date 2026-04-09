@@ -731,7 +731,7 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
     if any(x in url for x in ["identity/confirm", "proofs", "proteja", "protect"]):
         logger.info(f"[{job_id}] Security prompt detected ({url}), redirecting to Outlook...")
         try:
-            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
             time.sleep(5)
             if "outlook.live.com" in page.url.lower():
                 logger.info(f"[{job_id}] Redirect to Outlook OK!")
@@ -743,7 +743,7 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
         body = page.inner_text("body").lower()
         if any(x in body for x in ["proteja sua conta", "protect your account", "verify your identity"]):
             logger.info(f"[{job_id}] Security prompt in body, redirecting to Outlook...")
-            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
             time.sleep(5)
             if "outlook.live.com" in page.url.lower():
                 logger.info(f"[{job_id}] Redirect to Outlook OK!")
@@ -1262,7 +1262,7 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
     logger.info(f"[{job_id}] Going to Outlook...")
     
     try:
-        page.goto("https://outlook.live.com/mail/0/", timeout=30000, wait_until="domcontentloaded")
+        page.goto("https://outlook.live.com/mail/", timeout=30000, wait_until="domcontentloaded")
     except:
         pass
     time.sleep(4)
@@ -2600,7 +2600,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         # === STEP 5: Navigate to Outlook ===
         if "outlook.live.com" not in page.url.lower():
-            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
             time.sleep(8)
 
         if "outlook.live.com" not in page.url.lower():
