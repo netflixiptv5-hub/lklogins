@@ -60,6 +60,16 @@ app.get("/api/status/:jobId", (req, res) => {
   });
 });
 
+app.get("/api/logs/:jobId", async (req, res) => {
+  try {
+    const r = await fetch(`${WORKER_URL}/logs/${req.params.jobId}`);
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.json({ ok: false, error: "Worker indisponível." });
+  }
+});
+
 app.post("/api/update", (req, res) => {
   const { jobId, status, link, code, message, method, eta, expired } = req.body;
   const job = jobs.get(jobId);

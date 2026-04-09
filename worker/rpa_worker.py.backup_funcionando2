@@ -20,22 +20,12 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 import urllib.request
 import traceback
-import threading
 import random
 from email.utils import parsedate_to_datetime
 from cookie_cache import save_cookies, load_cookies, delete_cookies
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("RPA")
-
-# Registra handler pra salvar logs por job
-try:
-    from job_logger import JobLogHandler, cleanup_old_logs
-    _job_handler = JobLogHandler()
-    _job_handler.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(_job_handler)
-except Exception as _e:
-    print(f"[WARNING] job_logger não disponível: {_e}")
 
 # === CONFIG ===
 HOTMAIL_PASSWORD = "02022013L"
@@ -3033,20 +3023,6 @@ class JobHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok"}).encode())
-        elif self.path.startswith("/logs/"):
-            job_id = self.path.split("/logs/")[1].strip("/")
-            try:
-                from job_logger import get_logs
-                logs = get_logs(job_id)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "job_id": job_id, "logs": logs}).encode())
-            except Exception as e:
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
         else:
             self.send_response(404)
             self.end_headers()
@@ -3057,17 +3033,6 @@ class JobHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     os.environ.setdefault("DISPLAY", ":99")
-    
-    # Limpa logs velhos a cada 1h
-    def _log_cleanup_loop():
-        while True:
-            time.sleep(3600)
-            try:
-                cleanup_old_logs(24)
-            except:
-                pass
-    threading.Thread(target=_log_cleanup_loop, daemon=True).start()
-    
     port = int(os.environ.get("WORKER_PORT", 8787))
     server = ThreadingHTTPServer(("0.0.0.0", port), JobHandler)
     logger.info(f"RPA Worker running on port {port}")
