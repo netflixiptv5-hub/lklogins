@@ -733,6 +733,7 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
     def _try_redirect():
         logger.info(f"[{job_id}] Security prompt, tentando redirect pro Outlook...")
         try:
+            # Usa /mail/ sem o 0/ — funciona melhor quando tem identity/confirm
             page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
             time.sleep(6)
             final_url = page.url.lower()
@@ -1279,7 +1280,7 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
     logger.info(f"[{job_id}] Going to Outlook...")
     
     try:
-        page.goto("https://outlook.live.com/mail/", timeout=30000, wait_until="domcontentloaded")
+        page.goto("https://outlook.live.com/mail/0/", timeout=30000, wait_until="domcontentloaded")
     except:
         pass
     time.sleep(4)
@@ -2617,7 +2618,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         # === STEP 5: Navigate to Outlook ===
         if "outlook.live.com" not in page.url.lower():
-            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
+            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
             time.sleep(8)
 
         if "outlook.live.com" not in page.url.lower():
