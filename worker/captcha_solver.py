@@ -901,15 +901,57 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
                 pass
         
         if px_box:
-            # O ícone de acessibilidade fica ~25px à esquerda do px-captcha, centralizado verticalmente
-            # Tamanho do ícone: ~35x35px
-            icon_x = px_box['x'] - 25  # 25px à esquerda do início da barra
-            icon_y = px_box['y'] + px_box['height'] / 2  # centralizado verticalmente
+            # O ícone de acessibilidade fica à ESQUERDA da barra, na mesma região Y
+            # Tentar múltiplas posições porque o offset pode variar
+            # px_box é a barra "Pressione e segure", o ícone fica antes dela
+            offsets = [
+                (-45, 0),    # 45px à esquerda, mesmo Y
+                (-55, 0),    # 55px à esquerda
+                (-35, 0),    # 35px à esquerda
+                (-45, -5),   # Um pouco acima
+                (-45, 5),    # Um pouco abaixo
+                (-60, 0),    # Mais à esquerda
+                (-25, 0),    # Mais perto
+            ]
             
-            _log(job_id, f"PW: px-captcha box={px_box}, clicking accessibility icon at ({icon_x:.0f}, {icon_y:.0f})")
-            page.mouse.click(icon_x, icon_y)
-            _log(job_id, "PW: Clicked accessibility by coords!")
-            return True, "clicked_directly"
+            icon_center_y = px_box['y'] + px_box['height'] / 2
+            
+            for off_x, off_y in offsets:
+                icon_x = px_box['x'] + off_x
+                icon_y = icon_center_y + off_y
+                
+                _log(job_id, f"PW: Trying accessibility click at ({icon_x:.0f}, {icon_y:.0f}) [offset=({off_x},{off_y})]")
+                page.mouse.click(icon_x, icon_y)
+                time.sleep(1.5)
+                
+                # Checar se o texto do px-captcha mudou (indica que o modo acessível ativou)
+                try:
+                    for f in page.frames:
+                        fu = f.url.lower()
+                        if any(k in fu for k in ['hsprotect', 'enforcement', 'captcha', 'perimeterx']):
+                            el = f.query_selector("#px-captcha")
+                            if el:
+                                txt = el.inner_text().strip()
+                                style = el.evaluate("el => el.style.cssText || ''")
+                                height = el.evaluate("el => el.getBoundingClientRect().height")
+                                _log(job_id, f"PW: After click: text='{txt[:60]}' height={height:.0f} style={style[:80]}")
+                                # Se o texto mudou ou o height cresceu, o modo acessível ativou
+                                if txt or height > 50:
+                                    _log(job_id, f"PW: ✓ Accessibility mode seems active! text='{txt[:60]}' height={height:.0f}")
+                                    return True, "clicked_directly"
+                            break
+                except:
+                    pass
+                
+                # Checar se saiu da abuse page
+                try:
+                    if "abuse" not in page.url.lower():
+                        _log(job_id, "PW: ✓ Solved after accessibility click!")
+                        return True, "clicked_directly"
+                except:
+                    pass
+            
+            _log(job_id, "PW: All coordinate clicks tried, none activated accessibility mode", "warning")
         else:
             _log(job_id, "PW: Could not get px-captcha bounding box", "warning")
     except Exception as e:
