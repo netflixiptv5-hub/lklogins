@@ -969,20 +969,33 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
                 
                 _log(job_id, f"PW: Trying accessibility click at ({icon_x:.0f}, {icon_y:.0f}) [offset=({off_x},{off_y})]")
                 
-                # Usar CDP pra clicar — penetra iframes
+                # Hover primeiro (move gradual) depois clica
                 if cdp:
                     try:
-                        cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": icon_x, "y": icon_y, "buttons": 0})
-                        time.sleep(0.3)
+                        # Mover gradualmente até o ícone (simula mouse humano)
+                        start_x, start_y = px_box['x'] + px_box['width']/2, icon_center_y
+                        for step in range(8):
+                            mx = start_x + (icon_x - start_x) * (step+1) / 8
+                            my = start_y + (icon_y - start_y) * (step+1) / 8
+                            cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": mx, "y": my, "buttons": 0})
+                            time.sleep(0.05)
+                        # Hover por 0.6s pra deixar o ícone "acordar"
+                        time.sleep(0.6)
+                        # Clicar
                         cdp.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": icon_x, "y": icon_y, "button": "left", "clickCount": 1, "buttons": 1})
-                        time.sleep(0.15)
+                        time.sleep(0.2)
                         cdp.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": icon_x, "y": icon_y, "button": "left", "clickCount": 1, "buttons": 0})
+                        _log(job_id, f"PW: CDP hover+click sent at ({icon_x:.0f},{icon_y:.0f})")
                     except Exception as ce2:
                         _log(job_id, f"PW: CDP click error: {str(ce2)[:80]}")
+                        page.mouse.move(icon_x, icon_y)
+                        time.sleep(0.6)
                         page.mouse.click(icon_x, icon_y)
                 else:
+                    page.mouse.move(icon_x, icon_y)
+                    time.sleep(0.6)
                     page.mouse.click(icon_x, icon_y)
-                time.sleep(1.5)
+                time.sleep(2)
                 
                 # Checar se o texto do px-captcha mudou (indica que o modo acessível ativou)
                 try:
