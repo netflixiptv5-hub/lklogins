@@ -813,8 +813,10 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
                             return True
                     except:
                         pass
-                    logger.info(f"[{job_id}] Redirect to Outlook OK (URL match) via {outlook_url}")
-                    return True
+                    # SEM confirmação de inbox — NÃO retornar True!
+                    # Isso causa falso positivo (URL match mas redirect pra marketing depois)
+                    logger.warning(f"[{job_id}] URL match mas inbox não confirmado via {outlook_url} — continuando...")
+                    # Tentar a próxima URL antes de desistir
                 elif _is_marketing:
                     logger.warning(f"[{job_id}] Redirect caiu na página marketing MS365: {final_url}")
                 else:
@@ -834,6 +836,19 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
                 logger.warning(f"[{job_id}] Redirect {outlook_url} exception: {str(e)[:100]}")
         
         logger.warning(f"[{job_id}] Todas as tentativas de redirect falharam. URL final: {page.url}")
+        # Tentar voltar pra identity/confirm pra que handle_verification possa agir
+        try:
+            page.go_back()
+            time.sleep(3)
+            back_url = page.url.lower()
+            logger.info(f"[{job_id}] Voltou pra: {back_url}")
+            if not _is_security_page(back_url):
+                # Tenta navegar direto
+                page.goto("https://account.live.com/identity/confirm", timeout=15000, wait_until="domcontentloaded")
+                time.sleep(3)
+                logger.info(f"[{job_id}] Navegou pra identity/confirm: {page.url}")
+        except Exception as e:
+            logger.warning(f"[{job_id}] Erro ao voltar pra identity: {e}")
         return False
 
     url = page.url.lower()
