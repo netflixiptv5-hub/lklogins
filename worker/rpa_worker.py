@@ -2760,16 +2760,29 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Cookie cache hit! Carregando {len(cached_cookies)} cookies...")
             try:
                 context.add_cookies(cached_cookies)
-                page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
-                time.sleep(5)
+                page.goto("https://outlook.live.com/mail/0/", timeout=30000, wait_until="domcontentloaded")
+                time.sleep(8)
                 
                 url_after = page.url.lower()
-                if "outlook.live.com/mail" in url_after:
+                # Se redirecionou pra login/identity/microsoft365 = cookies expirados
+                if any(x in url_after for x in ["login.live", "identity/confirm", "microsoft.com/en", "microsoft-365"]):
+                    logger.info(f"[{job_id}] Cookie cache: redirecionou pra login ({url_after}), cookies expirados")
+                    delete_cookies(email_addr)
+                elif "outlook.live.com/mail" in url_after:
                     # Verifica se realmente tá logado (tem inbox)
+                    has_inbox = False
                     try:
-                        has_inbox = page.locator("[role='option'], button[aria-label*='New mail'], button[aria-label*='Nova']").first.is_visible(timeout=3000)
+                        has_inbox = page.locator("[role='option'], button[aria-label*='New mail'], button[aria-label*='Nova'], [role='searchbox'], input[aria-label*='earch']").first.is_visible(timeout=5000)
                     except:
-                        has_inbox = False
+                        pass
+                    
+                    if not has_inbox:
+                        # Tenta esperar mais um pouco
+                        time.sleep(3)
+                        try:
+                            has_inbox = page.locator("[role='option'], button[aria-label*='New mail'], button[aria-label*='Nova']").first.is_visible(timeout=3000)
+                        except:
+                            pass
                     
                     if has_inbox:
                         logger.info(f"[{job_id}] Cookie cache OK! Direto no Outlook.")
