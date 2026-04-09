@@ -803,7 +803,8 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
                 time.sleep(6)
                 final_url = page.url.lower()
                 
-                if "outlook.live.com/mail" in final_url or "outlook.live.com/owa" in final_url:
+                _is_marketing = "microsoft-365" in final_url or "microsoft.com/en" in final_url or "deeplink" in final_url
+                if ("outlook.live.com/mail" in final_url or "outlook.live.com/owa" in final_url) and not _is_marketing:
                     # Verifica se tem elementos do Outlook
                     try:
                         has_inbox = page.locator("[role='option'], [aria-label*='earch'], [aria-label*='esquis'], button[aria-label*='New mail'], button[aria-label*='Nova']").first.is_visible(timeout=3000)
@@ -814,6 +815,8 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
                         pass
                     logger.info(f"[{job_id}] Redirect to Outlook OK (URL match) via {outlook_url}")
                     return True
+                elif _is_marketing:
+                    logger.warning(f"[{job_id}] Redirect caiu na página marketing MS365: {final_url}")
                 else:
                     logger.warning(f"[{job_id}] Redirect para {outlook_url} falhou, caiu em: {final_url}")
                     # Se caiu na identity/confirm de novo, tenta clicar skip antes de tentar próxima URL
@@ -1368,26 +1371,42 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
     _search_deadline = time.time() + 30  # 30s max
     logger.info(f"[{job_id}] Going to Outlook...")
     
-    # Tenta /mail/0/ primeiro, se falhar tenta /mail/
+    # Tenta navegar pro Outlook — múltiplas URLs de fallback
     current_url = page.url.lower()
-    if "outlook.live.com/mail" in current_url:
+    _in_outlook = "outlook.live.com/mail" in current_url and "microsoft-365" not in current_url and "microsoft.com/en" not in current_url
+    
+    if _in_outlook:
         logger.info(f"[{job_id}] Already in Outlook, skipping navigation")
     else:
-        try:
-            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
-        except:
-            pass
-        time.sleep(4)
-        
-        # Se redirecionou pra fora do Outlook, tenta /mail/ (sem o 0)
-        url_check = page.url.lower()
-        if "outlook.live.com/mail" not in url_check:
-            logger.info(f"[{job_id}] /mail/0/ falhou ({url_check}), tentando /mail/...")
+        # Tentar múltiplas URLs
+        outlook_urls = [
+            "https://outlook.live.com/mail/0/",
+            "https://outlook.live.com/mail/",
+            "https://outlook.live.com/owa/",
+            "https://outlook.live.com/mail/0/?nlp=1",
+        ]
+        for outlook_url in outlook_urls:
             try:
-                page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
+                page.goto(outlook_url, timeout=25000, wait_until="domcontentloaded")
             except:
                 pass
             time.sleep(4)
+            
+            url_check = page.url.lower()
+            # Verificar se realmente está no Outlook (não na página de marketing)
+            if "outlook.live.com/mail" in url_check and "microsoft-365" not in url_check and "microsoft.com/en" not in url_check:
+                logger.info(f"[{job_id}] Outlook OK via {outlook_url}")
+                break
+            logger.info(f"[{job_id}] {outlook_url} falhou → {url_check}")
+        else:
+            # Nenhuma URL funcionou — última tentativa: ir pro /mail/ direto do login.live
+            logger.warning(f"[{job_id}] Todas URLs do Outlook falharam, tentando via login redirect...")
+            try:
+                page.goto("https://login.live.com/login.srf?wa=wsignin1.0&rpsnv=167&ct=1733000000&rver=7.5.2237.0&wp=MBI_SSL_SHARED&wreply=https%3a%2f%2foutlook.live.com%2fowa%2f&lc=1046", 
+                          timeout=25000, wait_until="domcontentloaded")
+                time.sleep(6)
+            except:
+                pass
     
     # Dismiss any popups/overlays
     page.evaluate("""() => {
@@ -1404,7 +1423,7 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
             continue
     
     url = page.url.lower()
-    if "outlook.live.com/mail" not in url:
+    if "outlook.live.com/mail" not in url or "microsoft-365" in url or "microsoft.com/en" in url:
         logger.error(f"[{job_id}] Not in Outlook: {url}")
         return None
     
