@@ -732,6 +732,60 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
     except Exception as e:
         _log(job_id, f"PW: Error iterating page.frames: {str(e)[:100]}")
     
+    # === STRATEGY 3: Scan the MAIN PAGE for small clickable elements near #px-captcha ===
+    # O botão de acessibilidade do PX fica na PÁGINA PRINCIPAL, ao lado do iframe/div do captcha
+    try:
+        _log(job_id, "PW: Scanning main page for accessibility button near captcha...")
+        
+        # Primeiro, pegar a posição do #px-captcha na página (ou do iframe)
+        captcha_y = None
+        try:
+            px_main = page.locator("#px-captcha").first
+            if px_main.is_visible(timeout=2000):
+                px_box = px_main.bounding_box()
+                if px_box:
+                    captcha_y = px_box['y']
+                    _log(job_id, f"PW: #px-captcha on main page at y={captcha_y:.0f}")
+        except:
+            pass
+        
+        # Listar TODOS os elementos clicáveis pequenos na página
+        all_elements = page.query_selector_all("button, a, [role='button'], div[onclick], span[onclick], img[onclick], svg, [tabindex='0']")
+        _log(job_id, f"PW: {len(all_elements)} clickable elements on main page")
+        
+        for el in all_elements:
+            try:
+                box = el.bounding_box()
+                if not box or box['width'] < 10 or box['height'] < 10:
+                    continue
+                if box['width'] > 100 or box['height'] > 100:
+                    continue  # Muito grande pra ser ícone de acessibilidade
+                
+                eid = el.evaluate("el => el.id || ''")
+                tag = el.evaluate("el => el.tagName")
+                cls = el.evaluate("el => (el.className || '').toString().substring(0, 80)")
+                aria = el.evaluate("el => el.getAttribute('aria-label') || ''")
+                title = el.evaluate("el => el.getAttribute('title') || ''")
+                
+                _log(job_id, f"  page el: <{tag}> id={eid} class={cls[:40]} aria={aria[:30]} title={title[:30]} box=({box['x']:.0f},{box['y']:.0f}) size={box['width']:.0f}x{box['height']:.0f}")
+                
+                # Detectar se é o botão de acessibilidade:
+                # - Está perto do captcha (mesma região Y)
+                # - É pequeno (ícone ~30-50px)
+                # - Tem referência a accessibility/acessibilidade
+                is_near_captcha = captcha_y is not None and abs(box['y'] - captcha_y) < 80
+                has_acc_hint = any(k in (aria + cls + title + eid).lower() for k in ['ccessib', 'a11y', 'wheelchair', 'human', 'handicap'])
+                is_small_icon = box['width'] < 60 and box['height'] < 60 and box['width'] > 12
+                is_not_captcha = eid != 'px-captcha'
+                
+                if is_not_captcha and (has_acc_hint or (is_near_captcha and is_small_icon)):
+                    _log(job_id, f"PW: → ACCESSIBILITY BUTTON on main page! <{tag}> id={eid} near_captcha={is_near_captcha} acc_hint={has_acc_hint}")
+                    return el, "element_handle"
+            except:
+                continue
+    except Exception as e:
+        _log(job_id, f"PW: Error scanning main page: {str(e)[:100]}")
+    
     _log(job_id, "PW: Accessibility button NOT found anywhere", "warning")
     return None, None
 
