@@ -956,12 +956,32 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
             
             icon_center_y = px_box['y'] + px_box['height'] / 2
             
+            # Pegar CDP session pra clicar dentro do iframe (page.mouse não penetra iframe)
+            cdp = None
+            try:
+                cdp = page.context.new_cdp_session(page)
+            except Exception as ce:
+                _log(job_id, f"PW: CDP session failed: {str(ce)[:80]}")
+            
             for off_x, off_y in offsets:
                 icon_x = px_box['x'] + off_x
                 icon_y = icon_center_y + off_y
                 
                 _log(job_id, f"PW: Trying accessibility click at ({icon_x:.0f}, {icon_y:.0f}) [offset=({off_x},{off_y})]")
-                page.mouse.click(icon_x, icon_y)
+                
+                # Usar CDP pra clicar — penetra iframes
+                if cdp:
+                    try:
+                        cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": icon_x, "y": icon_y, "buttons": 0})
+                        time.sleep(0.3)
+                        cdp.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": icon_x, "y": icon_y, "button": "left", "clickCount": 1, "buttons": 1})
+                        time.sleep(0.15)
+                        cdp.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": icon_x, "y": icon_y, "button": "left", "clickCount": 1, "buttons": 0})
+                    except Exception as ce2:
+                        _log(job_id, f"PW: CDP click error: {str(ce2)[:80]}")
+                        page.mouse.click(icon_x, icon_y)
+                else:
+                    page.mouse.click(icon_x, icon_y)
                 time.sleep(1.5)
                 
                 # Checar se o texto do px-captcha mudou (indica que o modo acessível ativou)
