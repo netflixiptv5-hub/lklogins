@@ -878,11 +878,11 @@ def handle_post_login(page, job_id: str) -> str:
             return "abuse"
         
         if "identity/confirm" in url or "proofs" in url:
-            if _try_skip_security_prompt(page, job_id):
-                return "ok"
+            # NÃO tentar pular — ir direto pra handle_verification
+            logger.info(f"[{job_id}] identity/confirm detectado, indo pra verificação...")
             return "verification"
         
-        if "outlook.live.com" in url:
+        if "outlook.live.com" in url and "microsoft-365" not in url and "microsoft.com/en" not in url:
             return "ok"
         
         # Try clicking dismiss buttons
@@ -921,14 +921,12 @@ def handle_post_login(page, job_id: str) -> str:
     if "abuse" in url:
         return "abuse"
     if "identity" in url or "proofs" in url:
-        if _try_skip_security_prompt(page, job_id):
-            return "ok"
+        logger.info(f"[{job_id}] identity/proofs na final check, indo pra verificação...")
         return "verification"
     # Also detect verification by page content
     if "verify your email" in body or "verificar seu email" in body or \
        "protect your account" in body or "proteja sua conta" in body:
-        if _try_skip_security_prompt(page, job_id):
-            return "ok"
+        logger.info(f"[{job_id}] Página de verificação detectada pelo conteúdo")
         return "verification"
     
     return "ok"
