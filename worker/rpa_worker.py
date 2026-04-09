@@ -2703,16 +2703,7 @@ def process_job(job_id: str, email_addr: str, service: str):
     except Exception as e:
         logger.error(f"[{job_id}] API method error: {e}, trying code login...")
 
-    # === TRY CODE LOGIN — pula se já sabe que é abuse ===
-    if not _api_abuse:
-        try:
-            if process_job_code_login(job_id, email_addr, service):
-                return  # Code login handled it
-            logger.info(f"[{job_id}] Code login failed, falling back to Playwright browser...")
-        except Exception as e:
-            logger.error(f"[{job_id}] Code login error: {e}, falling back to browser")
-    
-    # === FALLBACK: PLAYWRIGHT BROWSER (password login) ===
+    # === TRY PLAYWRIGHT BROWSER (password login) ===
     from playwright.sync_api import sync_playwright
     
     patterns = EMAIL_PATTERNS.get(service, [])
@@ -2720,6 +2711,7 @@ def process_job(job_id: str, email_addr: str, service: str):
     
     pw = None
     browser = None
+    _playwright_password_fail = False  # flag pra saber se falhou por senha
     
     try:
         update_job(job_id, "connecting", method="playwright", eta=30)
@@ -2747,85 +2739,87 @@ def process_job(job_id: str, email_addr: str, service: str):
         # === LOGIN ===
         ok = fast_login(page, email_addr, job_id)
         if not ok:
-            update_job(job_id, "error", message="Login falhou. Verifique email e senha.")
-            return
-        
-        # === POST-LOGIN ===
-        state = handle_post_login(page, job_id)
-        logger.info(f"[{job_id}] Post-login state: {state}")
-        
-        if state == "abuse":
-            # Silent retry — don't show error to user, just extend the wait
-            abuse_max_retries = 2
-            for abuse_attempt in range(1, abuse_max_retries + 1):
-                logger.info(f"[{job_id}] Abuse detected, silent retry {abuse_attempt}/{abuse_max_retries}...")
-                update_job(job_id, "connecting", eta=60 + abuse_attempt * 30,
-                           message="Processando... aguarde um momento.")
-                
-                # Close current browser
-                if browser:
-                    browser.close()
-                    browser = None
-                
-                # Try solving CAPTCHA
-                captcha_solved = solve_abuse_with_uc(email_addr, job_id)
-                
-                # Re-login regardless
-                browser, context, page = launch_browser()
-                ok = fast_login(page, email_addr, job_id)
-                if not ok:
-                    logger.warning(f"[{job_id}] Re-login failed after abuse attempt {abuse_attempt}")
-                    if abuse_attempt < abuse_max_retries:
-                        if browser:
-                            browser.close()
-                            browser = None
-                        time.sleep(5)
-                        continue
-                    else:
+            _playwright_password_fail = True
+            logger.info(f"[{job_id}] Playwright login falhou, vai tentar code login...")
+        else:
+            # === POST-LOGIN ===
+            state = handle_post_login(page, job_id)
+            logger.info(f"[{job_id}] Post-login state: {state}")
+            
+            if state == "abuse":
+                # Silent retry — don't show error to user, just extend the wait
+                abuse_max_retries = 2
+                for abuse_attempt in range(1, abuse_max_retries + 1):
+                    logger.info(f"[{job_id}] Abuse detected, silent retry {abuse_attempt}/{abuse_max_retries}...")
+                    update_job(job_id, "connecting", eta=60 + abuse_attempt * 30,
+                               message="Processando... aguarde um momento.")
+                    
+                    # Close current browser
+                    if browser:
+                        browser.close()
+                        browser = None
+                    
+                    # Try solving CAPTCHA
+                    captcha_solved = solve_abuse_with_uc(email_addr, job_id)
+                    
+                    # Re-login regardless
+                    browser, context, page = launch_browser()
+                    ok = fast_login(page, email_addr, job_id)
+                    if not ok:
+                        logger.warning(f"[{job_id}] Re-login failed after abuse attempt {abuse_attempt}")
+                        if abuse_attempt < abuse_max_retries:
+                            if browser:
+                                browser.close()
+                                browser = None
+                            time.sleep(5)
+                            continue
+                        else:
+                            update_job(job_id, "error",
+                                message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
+                            return
+                    
+                    state = handle_post_login(page, job_id)
+                    logger.info(f"[{job_id}] After abuse retry {abuse_attempt}: state={state}")
+                    
+                    if state != "abuse":
+                        break  # Success! Continue normally
+                    
+                    if abuse_attempt == abuse_max_retries:
                         update_job(job_id, "error",
                             message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
                         return
-                
-                state = handle_post_login(page, job_id)
-                logger.info(f"[{job_id}] After abuse retry {abuse_attempt}: state={state}")
-                
-                if state != "abuse":
-                    break  # Success! Continue normally
-                
-                if abuse_attempt == abuse_max_retries:
+                    
+                    # Wait before next retry
+                    time.sleep(5)
+            
+            if state == "verification":
+                update_job(job_id, "connecting", eta=50,
+                           message="Verificação Microsoft. Aguarde...")
+                if not handle_verification(page, job_id, username):
                     update_job(job_id, "error",
-                        message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
+                        message="Verificação falhou. Tente novamente.")
                     return
-                
-                # Wait before next retry
-                time.sleep(5)
-        
-        if state == "verification":
-            update_job(job_id, "connecting", eta=50,
-                       message="Verificação Microsoft. Aguarde...")
-            if not handle_verification(page, job_id, username):
-                update_job(job_id, "error",
-                    message="Verificação falhou. Tente novamente.")
+                handle_post_login(page, job_id)
+            
+            update_job(job_id, "logged_in", method="playwright", eta=15)
+            
+            # === SEARCH EMAILS ===
+            update_job(job_id, "searching", method="playwright", eta=10)
+            result = search_and_extract(page, service, patterns, job_id)
+            
+            if result:
+                update_job(job_id, "found",
+                           link=result.get("link"), code=result.get("code"),
+                           method="playwright", expired=result.get("expired", False))
                 return
-            handle_post_login(page, job_id)
-        
-        update_job(job_id, "logged_in", method="playwright", eta=15)
-        
-        # === SEARCH EMAILS ===
-        update_job(job_id, "searching", method="playwright", eta=10)
-        result = search_and_extract(page, service, patterns, job_id)
-        
-        if result:
-            update_job(job_id, "found",
-                       link=result.get("link"), code=result.get("code"),
-                       method="playwright", expired=result.get("expired", False))
-        else:
-            update_job(job_id, "not_found",
-                message="Nenhum email Netflix encontrado. Reenvie a solicitação e tente novamente.")
+            else:
+                update_job(job_id, "not_found",
+                    message="Nenhum email Netflix encontrado. Reenvie a solicitação e tente novamente.")
+                return
     
     except Exception as e:
-        logger.error(f"[{job_id}] Error: {traceback.format_exc()}")
-        update_job(job_id, "error", message=f"Erro: {str(e)[:80]}")
+        logger.error(f"[{job_id}] Playwright error: {traceback.format_exc()}")
+        _playwright_password_fail = True  # tenta code login como fallback
     
     finally:
         if browser:
@@ -2838,6 +2832,20 @@ def process_job(job_id: str, email_addr: str, service: str):
                 pw.stop()
             except:
                 pass
+
+    # === LAST RESORT: CODE LOGIN (só se Playwright falhou por senha/erro) ===
+    if _playwright_password_fail and not _api_abuse:
+        try:
+            logger.info(f"[{job_id}] Tentando code login como último recurso...")
+            if process_job_code_login(job_id, email_addr, service):
+                return  # Code login handled it
+            logger.info(f"[{job_id}] Code login também falhou")
+        except Exception as e:
+            logger.error(f"[{job_id}] Code login error: {e}")
+    
+    # Se chegou aqui, nada funcionou
+    update_job(job_id, "error",
+        message="Login falhou. Verifique email e senha.")
 
 
 # ===================== HTTP SERVER =====================
