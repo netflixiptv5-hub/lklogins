@@ -556,23 +556,21 @@ def process_job_imap_direct(job_id: str, email_addr: str, service: str):
         all_ids = msg_ids[0].split()
         logger.info(f"[{job_id}] IMAP direct: {len(all_ids)} emails for {email_addr}")
         
-        # Two-pass: subject match first (priority), then sender-only match (fallback)
-        # This ensures emails in ANY language are processed (Hindi, Arabic, etc.)
-        matched_ids = []
+        # Two-pass: subject match first (priority), then fallback (any sender match)
+        recent_ids = list(reversed(all_ids[-15:]))
+        subject_matched_ids = []
         fallback_ids = []
         
-        for msg_id in reversed(all_ids[-15:]):
+        for msg_id in recent_ids:
             try:
                 _, msg_data = mail.fetch(msg_id, "(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])")
                 header_raw = msg_data[0][1]
                 header_msg = email_lib.message_from_bytes(header_raw)
                 
-                # Quick check: sender matches?
                 from_header = (header_msg.get("From", "") or "").lower()
                 if sender_keywords and not any(kw in from_header for kw in sender_keywords):
                     continue
                 
-                # Subject match = priority, not filter
                 subject_raw = header_msg.get("Subject", "") or ""
                 subject = ""
                 try:
@@ -583,26 +581,22 @@ def process_job_imap_direct(job_id: str, email_addr: str, service: str):
                             subject += str(part_bytes)
                 except:
                     subject = subject_raw
-                subject_lower = subject.lower()
+                subject = subject.lower()
                 
-                if patterns and any(p in subject_lower for p in patterns):
-                    matched_ids.append((msg_id, subject))
+                if patterns and any(p in subject for p in patterns):
+                    subject_matched_ids.append(msg_id)
                 else:
-                    fallback_ids.append((msg_id, subject))
+                    fallback_ids.append(msg_id)
             except:
                 continue
         
-        logger.info(f"[{job_id}] IMAP direct: {len(matched_ids)} subject-matched + {len(fallback_ids)} fallback")
+        logger.info(f"[{job_id}] IMAP direct: {len(subject_matched_ids)} subject match, {len(fallback_ids)} fallback")
         
-        for msg_id, subject in (matched_ids + fallback_ids)[:15]:
+        for msg_id in subject_matched_ids + fallback_ids:
             try:
-                logger.info(f"[{job_id}] IMAP checking: '{subject}'")
-                
-                # Fetch the full body
                 _, msg_data = mail.fetch(msg_id, "(RFC822)")
                 msg = email_lib.message_from_bytes(msg_data[0][1])
                 
-                # Extract body
                 body = ""
                 if msg.is_multipart():
                     for part in msg.walk():
@@ -729,55 +723,33 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
 
 def _try_skip_security_prompt(page, job_id: str) -> bool:
     """
-    Skip 'Add security info' / 'Proteja sua conta' / 'Help us protect' page.
-    The session is already authenticated — just redirect to Outlook inbox.
-    Returns True if we're now in Outlook.
+    Quando MS mostra 'proteja sua conta' / 'identity/confirm' / 'proofs',
+    ao invés de tentar clicar botões, vai direto pro Outlook.
+    Retorna True se redirecionou com sucesso.
     """
+    url = page.url.lower()
+    if any(x in url for x in ["identity/confirm", "proofs", "proteja", "protect"]):
+        logger.info(f"[{job_id}] Security prompt detected ({url}), redirecting to Outlook...")
+        try:
+            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+            time.sleep(5)
+            if "outlook.live.com" in page.url.lower():
+                logger.info(f"[{job_id}] Redirect to Outlook OK!")
+                return True
+        except Exception as e:
+            logger.warning(f"[{job_id}] Redirect failed: {e}")
+    # Also check body text
     try:
         body = page.inner_text("body").lower()
-    except:
-        body = ""
-
-    url = page.url.lower()
-
-    # Detect the "protect your account" / "add security info" / identity confirm page
-    is_protect_page = (
-        "identity/confirm" in url or "proofs" in url or
-        any(kw in body for kw in [
-            "proteja sua conta", "protect your account", "add security info",
-            "adicionar informações de segurança", "vamos proteger",
-            "let's secure your account", "help us protect",
-        ])
-    )
-    if not is_protect_page:
-        return False
-
-    logger.info(f"[{job_id}] Detected 'protect your account' page — redirecting to Outlook directly...")
-
-    # Session is already authenticated. Just go to Outlook.
-    try:
-        page.goto("https://outlook.live.com/mail/0/", timeout=20000, wait_until="domcontentloaded")
-        time.sleep(4)
+        if any(x in body for x in ["proteja sua conta", "protect your account", "verify your identity"]):
+            logger.info(f"[{job_id}] Security prompt in body, redirecting to Outlook...")
+            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+            time.sleep(5)
+            if "outlook.live.com" in page.url.lower():
+                logger.info(f"[{job_id}] Redirect to Outlook OK!")
+                return True
     except:
         pass
-
-    if "outlook.live.com" in page.url.lower():
-        logger.info(f"[{job_id}] Skip successful! Now in Outlook inbox")
-        return True
-
-    # Second attempt
-    logger.info(f"[{job_id}] First redirect didn't work (URL: {page.url[:80]}), trying again...")
-    try:
-        page.goto("https://outlook.live.com/mail/0/", timeout=15000, wait_until="domcontentloaded")
-        time.sleep(4)
-    except:
-        pass
-
-    if "outlook.live.com" in page.url.lower():
-        logger.info(f"[{job_id}] Skip successful on 2nd try!")
-        return True
-
-    logger.warning(f"[{job_id}] Could not redirect to Outlook. URL: {page.url[:100]}")
     return False
 
 
@@ -787,20 +759,19 @@ def handle_post_login(page, job_id: str) -> str:
     Returns: "ok", "abuse", "verification", "error"
     """
     # Quick dismiss common prompts
-    for _ in range(5):
+    for _ in range(3):
         url = page.url.lower()
         
         if "abuse" in url:
             return "abuse"
         
-        if "outlook.live.com" in url:
-            return "ok"
-        
         if "identity/confirm" in url or "proofs" in url:
-            # === TRY TO SKIP "protect your account" page first ===
             if _try_skip_security_prompt(page, job_id):
                 return "ok"
             return "verification"
+        
+        if "outlook.live.com" in url:
+            return "ok"
         
         # Try clicking dismiss buttons
         clicked = False
@@ -838,16 +809,12 @@ def handle_post_login(page, job_id: str) -> str:
     if "abuse" in url:
         return "abuse"
     if "identity" in url or "proofs" in url:
-        # One more try to skip
         if _try_skip_security_prompt(page, job_id):
             return "ok"
         return "verification"
     # Also detect verification by page content
-    if "verify your email" in body or "verificar seu email" in body:
-        if _try_skip_security_prompt(page, job_id):
-            return "ok"
-        return "verification"
-    if "protect your account" in body or "proteja sua conta" in body:
+    if "verify your email" in body or "verificar seu email" in body or \
+       "protect your account" in body or "proteja sua conta" in body:
         if _try_skip_security_prompt(page, job_id):
             return "ok"
         return "verification"
@@ -1426,16 +1393,20 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
     logger.info(f"[{job_id}] Found {len(email_items)} results")
     
     # Two-pass: first try pattern-matched emails, then any email from the search
-    # Date filter REMOVED — search already returns sorted by date, extract_email_content validates content
-    # Expired check still happens after extraction
+    # Também filtra por data — só emails recentes (SEARCH_MINUTES)
     now = datetime.now()
     matched_indices = []
     fallback_indices = []
     email_times = {}  # idx -> hora do email (ex: "6:46 pm")
+    NETFLIX_SERVICES = {"password_reset", "household_update", "temp_code", "netflix_disconnect"}
+    apply_time_filter = True  # aplica pra todos os serviços
 
     for idx, item in enumerate(email_items[:15]):
         try:
             text = ((item.text_content() or "") + " " + (item.get_attribute("aria-label") or "")).lower()
+            # Filtro de tempo: Outlook mostra hora (ex: "14:32") pra emails de hoje
+            # Se mostrar data (ex: "ontem", "seg", "07/04") é antigo — pula
+            # Filtro de data REMOVIDO — processa todos os emails
 
             # Guardar hora do email pra calcular expired depois
             import re as _re2
@@ -1444,11 +1415,9 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
                 email_times[idx] = time_match.group(0).strip()
                 logger.info(f"[{job_id}] Email #{idx} time: {email_times[idx]}")
 
-            # Subject match = prioridade, mas NÃO filtra (funciona com qualquer idioma)
-            # A extração do HTML é o filtro real
             if any(p.lower() in text for p in patterns):
                 matched_indices.append(idx)
-            else:
+            elif search_brand in text:
                 fallback_indices.append(idx)
         except:
             continue
@@ -1504,6 +1473,30 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
                     pass
                 result = extract_netflix_link(body_html, service)
                 if result:
+                    # Calcular expired baseado na hora do email
+                    expired = False
+                    time_str = email_times.get(idx, "")
+                    if time_str:
+                        try:
+                            import re as _re3
+                            tm = _re3.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', time_str, _re3.IGNORECASE)
+                            if tm:
+                                h, m = int(tm.group(1)), int(tm.group(2))
+                                ampm = (tm.group(3) or "").lower()
+                                if ampm == "pm" and h != 12:
+                                    h += 12
+                                elif ampm == "am" and h == 12:
+                                    h = 0
+                                from datetime import datetime as _dt
+                                email_dt = _dt.now().replace(hour=h, minute=m, second=0, microsecond=0)
+                                age_min = (_dt.now() - email_dt).total_seconds() / 60
+                                if age_min < 0:
+                                    age_min += 1440  # virou o dia
+                                expired = False  # expired check removido
+                                logger.info(f"[{job_id}] Email time={time_str}, age={age_min:.0f}min, expired={expired}")
+                        except Exception as te:
+                            logger.warning(f"[{job_id}] Could not parse email time: {te}")
+                    result["expired"] = expired
                     logger.info(f"[{job_id}] FOUND: {result}")
                     return result
                 else:
@@ -1573,21 +1566,22 @@ def process_job_imap_cached(job_id: str, email_addr: str, service: str, mail) ->
         update_job(job_id, "searching", method="imap", eta=2)
         mail.select("INBOX", readonly=True)
 
+        # Two-pass: subject match first (priority), then fallback
+        all_msgs_matched = []
+        all_msgs_fallback = []
+        
         for sender_hint in sender_patterns[:3]:
             try:
                 status, msg_ids = mail.search(None, f'(FROM "{sender_hint}" SINCE "{cutoff}")')
                 if status != "OK" or not msg_ids[0]:
                     continue
 
-                # Two-pass: subject match first (priority), then all sender-matched (fallback)
-                matched_ids = []
-                fallback_ids = []
-                
                 for msg_id in reversed(msg_ids[0].split()[-20:]):
                     try:
-                        _, hdr_data = mail.fetch(msg_id, "(BODY[HEADER.FIELDS (SUBJECT)])")
-                        hdr_msg = email_lib.message_from_bytes(hdr_data[0][1])
-                        subject_raw = hdr_msg.get("Subject", "")
+                        _, msg_data = mail.fetch(msg_id, "(RFC822)")
+                        msg = email_lib.message_from_bytes(msg_data[0][1])
+
+                        subject_raw = msg.get("Subject", "")
                         subject = ""
                         for part, enc in decode_header(subject_raw):
                             if isinstance(part, bytes):
@@ -1597,44 +1591,39 @@ def process_job_imap_cached(job_id: str, email_addr: str, service: str, mail) ->
                         subject_lower = subject.lower()
 
                         if any(p.lower() in subject_lower for p in patterns):
-                            matched_ids.append(msg_id)
+                            all_msgs_matched.append(msg)
                         else:
-                            fallback_ids.append(msg_id)
+                            all_msgs_fallback.append(msg)
                     except:
-                        fallback_ids.append(msg_id)
                         continue
-                
-                logger.info(f"[{job_id}] IMAP cached: {len(matched_ids)} subject-matched + {len(fallback_ids)} fallback for sender '{sender_hint}'")
-                
-                for msg_id in (matched_ids + fallback_ids)[:15]:
-                    try:
-                        _, msg_data = mail.fetch(msg_id, "(RFC822)")
-                        msg = email_lib.message_from_bytes(msg_data[0][1])
-
-                        # Extrai corpo
-                        body = ""
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                if part.get_content_type() in ("text/plain", "text/html"):
-                                    payload = part.get_payload(decode=True)
-                                    if payload:
-                                        body += payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
-                        else:
-                            payload = msg.get_payload(decode=True)
+            except:
+                continue
+        
+        logger.info(f"[{job_id}] IMAP cached: {len(all_msgs_matched)} subject match, {len(all_msgs_fallback)} fallback")
+        
+        for msg in all_msgs_matched + all_msgs_fallback:
+            try:
+                body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() in ("text/plain", "text/html"):
+                            payload = part.get_payload(decode=True)
                             if payload:
-                                body += payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+                                body += payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+                else:
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        body += payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
 
-                        result = extract_email_content(body, service)
-                        if result:
-                            expired = False
-                            if result.get("link"):
-                                update_job(job_id, "found", link=result["link"], method="imap", expired=expired)
-                            elif result.get("code"):
-                                update_job(job_id, "found", code=result["code"], method="imap", expired=expired)
-                            mail.logout()
-                            return True
-                    except:
-                        continue
+                result = extract_email_content(body, service)
+                if result:
+                    expired = False
+                    if result.get("link"):
+                        update_job(job_id, "found", link=result["link"], method="imap", expired=expired)
+                    elif result.get("code"):
+                        update_job(job_id, "found", code=result["code"], method="imap", expired=expired)
+                    mail.logout()
+                    return True
             except:
                 continue
 
@@ -1661,7 +1650,7 @@ def process_job_imap_cached(job_id: str, email_addr: str, service: str, mail) ->
                                     body += payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
                             result = extract_email_content(body, service)
                             if result:
-                                expired = False
+                                expired = False  # expired check removido
                                 if result.get("link"):
                                     update_job(job_id, "found", link=result["link"], method="imap", expired=expired)
                                 elif result.get("code"):
@@ -1773,9 +1762,8 @@ def process_job_api(job_id: str, email_addr: str, service: str) -> bool:
             return True  # Handled (no fallback needed)
         
         # === GET EMAIL CONTENT ===
-        # First pass: subject pattern match (priority — works for known languages)
-        # Second pass: any brand email (fallback — works for ALL languages)
-        # The real filter is extract_email_content() which checks the HTML body
+        # First pass: only emails matching subject patterns
+        # Second pass: any brand email (fallback)
         matching_convs = []
         fallback_convs = []
         for i, conv in enumerate(results[:10]):
@@ -1787,11 +1775,8 @@ def process_job_api(job_id: str, email_addr: str, service: str) -> bool:
                 matching_convs.append(conv)
             elif any(kw in sender or kw in topic for kw in brand_kws):
                 fallback_convs.append(conv)
-            else:
-                # Qualquer resultado da busca entra como fallback (busca já filtrou por brand)
-                fallback_convs.append(conv)
         
-        logger.info(f"[{job_id}] API: {len(matching_convs)} subject-matched + {len(fallback_convs)} fallback")
+        logger.info(f"[{job_id}] API: {len(matching_convs)} matching, {len(fallback_convs)} fallback")
         
         for conv in matching_convs + fallback_convs:
             src = conv.get("Source", {})
@@ -1851,15 +1836,37 @@ def process_job_api(job_id: str, email_addr: str, service: str) -> bool:
                         subject = msg.get("Subject", "")
                         received = msg.get("DateTimeReceived", "") or msg.get("DateTimeSent", "") or ""
 
-                        logger.info(f"[{job_id}] API email: '{subject}' ({len(body_html)} chars)")
+                        # Filtra emails mais antigos que SEARCH_MINUTES
+                        if received:
+                            try:
+                                from datetime import timezone
+                                recv_dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
+                                age_minutes = (datetime.now(timezone.utc) - recv_dt).total_seconds() / 60
+                                if age_minutes > SEARCH_MINUTES:
+                                    logger.info(f"[{job_id}] API skip email antigo ({age_minutes:.0f}min): '{subject}'")
+                                    continue
+                            except:
+                                pass  # Se não conseguir parsear a data, processa mesmo assim
+
+                        logger.info(f"[{job_id}] API email #{i}: '{subject}' ({len(body_html)} chars)")
                         
                         if body_html:
                             result = extract_email_content(body_html, service)
                             if result:
-                                logger.info(f"[{job_id}] API FOUND: {result}")
+                                # Check if email is close to expiring (>12 min = warn)
+                                expired = False
+                                if received:
+                                    try:
+                                        from datetime import timezone as tz
+                                        recv_dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
+                                        age_min = (datetime.now(tz.utc) - recv_dt).total_seconds() / 60
+                                        expired = False  # expired check removido
+                                    except:
+                                        pass
+                                logger.info(f"[{job_id}] API FOUND: {result} (expired={expired})")
                                 update_job(job_id, "found",
                                     link=result.get("link"), code=result.get("code"),
-                                    method="api")
+                                    method="api", expired=expired)
                                 return True
                 except Exception as e:
                     logger.error(f"[{job_id}] API GetItem error: {e}")
@@ -2146,8 +2153,8 @@ def process_job_gmail_imap(job_id: str, email_addr: str, service: str, app_passw
         all_ids = msg_ids[0].split()
         logger.info(f"[{job_id}] Gmail IMAP: {len(all_ids)} emails recentes")
 
-        # Two-pass: subject match = priority, sender match = fallback
-        matched_ids = []
+        # Two-pass: subject match first (priority), then fallback
+        subject_matched_ids = []
         fallback_ids = []
         
         for msg_id in reversed(all_ids[-20:]):
@@ -2169,21 +2176,19 @@ def process_job_gmail_imap(job_id: str, email_addr: str, service: str, app_passw
                             subject += str(part_bytes)
                 except:
                     subject = subject_raw
-                subject_lower = subject.lower()
+                subject = subject.lower()
 
-                if patterns and any(p in subject_lower for p in patterns):
-                    matched_ids.append((msg_id, subject_lower))
+                if patterns and any(p in subject for p in patterns):
+                    subject_matched_ids.append(msg_id)
                 else:
-                    fallback_ids.append((msg_id, subject_lower))
+                    fallback_ids.append(msg_id)
             except:
                 continue
         
-        logger.info(f"[{job_id}] Gmail IMAP: {len(matched_ids)} subject-matched + {len(fallback_ids)} fallback")
+        logger.info(f"[{job_id}] Gmail IMAP: {len(subject_matched_ids)} subject match, {len(fallback_ids)} fallback")
         
-        for msg_id, subject in (matched_ids + fallback_ids)[:15]:
+        for msg_id in subject_matched_ids + fallback_ids:
             try:
-                logger.info(f"[{job_id}] Gmail IMAP checking: '{subject}'")
-
                 _, msg_data = mail.fetch(msg_id, "(RFC822)")
                 msg = email_lib.message_from_bytes(msg_data[0][1])
 
@@ -2204,7 +2209,7 @@ def process_job_gmail_imap(job_id: str, email_addr: str, service: str, app_passw
 
                 result = extract_email_content(body, service)
                 if result:
-                    expired = False
+                    expired = False  # expired check removido
                     logger.info(f"[{job_id}] Gmail IMAP FOUND: {result} (expired={expired})")
                     mail.logout()
                     update_job(job_id, "found", link=result.get("link"), code=result.get("code"), method="imap", expired=expired)
@@ -2441,21 +2446,6 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         has_send_code = "send code" in body or "enviar código" in body
 
         if not has_send_code:
-            # Check if it's a "protect your account" page — try to skip it
-            if _try_skip_security_prompt(page, job_id):
-                logger.info(f"[{job_id}] Code login: skipped security prompt, now in Outlook!")
-                # We're in Outlook — go directly to search
-                update_job(job_id, "logged_in", method="code", eta=10)
-                update_job(job_id, "searching", method="code", eta=8)
-                result = search_and_extract(page, service, patterns, job_id)
-                if result:
-                    update_job(job_id, "found",
-                        link=result.get("link"), code=result.get("code"),
-                        method="code", expired=result.get("expired", False))
-                else:
-                    update_job(job_id, "not_found",
-                        message="Nenhum email encontrado. Reenvie a solicitação e tente novamente.")
-                return True  # Handled
             logger.info(f"[{job_id}] Code login: not on code page, aborting")
             return False  # Let other methods try
 
@@ -2588,9 +2578,14 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         # === STEP 4: Post-login (stay signed in, etc.) ===
         logger.info(f"[{job_id}] Code accepted, handling post-login...")
+        # Tenta pular prompt de segurança primeiro
+        _try_skip_security_prompt(page, job_id)
         for _ in range(8):
             url = page.url.lower()
             if "outlook.live.com" in url:
+                break
+            # Tenta pular security prompt a cada iteração
+            if _try_skip_security_prompt(page, job_id):
                 break
             for sel in ["#idSIButton9", "#idBtn_Back", "#acceptButton"]:
                 try:
