@@ -630,11 +630,188 @@ def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_
 
 # ==================== PLAYWRIGHT-BASED SOLVER ====================
 
+def _find_accessibility_button(page, frame, job_id):
+    """Find the accessibility icon button inside the CAPTCHA frame or page."""
+    # O ícone de acessibilidade fica DENTRO do iframe, ao lado do #px-captcha
+    # Geralmente é um <button> ou <div> com aria-label de acessibilidade
+    selectors = [
+        "#px-captcha-accessibility",
+        "[aria-label*='accessibility']",
+        "[aria-label*='acessib']",
+        "[aria-label*='Accessible']",
+        "button.accessibility",
+        ".accessibility-icon",
+        ".px-accessibility",
+        "a[href*='accessibility']",
+        # PX usa um SVG/ícone clicável ao lado do botão
+        "#px-captcha ~ button",
+        "#px-captcha ~ div[role='button']",
+        "#px-captcha ~ a",
+        # Tentar por posição: elementos clicáveis perto do captcha
+        "[data-testid*='access']",
+        "button:not(#px-captcha)",
+    ]
+    
+    # Tentar dentro do frame primeiro
+    if frame is not None:
+        for sel in selectors:
+            try:
+                elem = frame.locator(sel).first
+                if elem.is_visible(timeout=1500):
+                    _log(job_id, f"PW: Accessibility button found in frame via '{sel}'")
+                    return elem, "frame"
+            except:
+                continue
+        
+        # Tentar achar por imagem/SVG de acessibilidade
+        try:
+            # Buscar qualquer elemento clicável que NÃO seja o #px-captcha
+            all_buttons = frame.locator("button, [role='button'], a, [onclick]")
+            count = all_buttons.count()
+            _log(job_id, f"PW: {count} clickable elements in frame")
+            for i in range(count):
+                elem = all_buttons.nth(i)
+                try:
+                    tag = elem.evaluate("el => el.tagName")
+                    eid = elem.evaluate("el => el.id || ''")
+                    cls = elem.evaluate("el => el.className || ''")
+                    aria = elem.evaluate("el => el.getAttribute('aria-label') || ''")
+                    box = elem.bounding_box()
+                    _log(job_id, f"  frame clickable[{i}]: tag={tag} id={eid} class={cls[:60]} aria={aria[:40]} box={box}")
+                    if eid != "px-captcha" and box and box['width'] > 10 and box['width'] < 100:
+                        _log(job_id, f"  → Possible accessibility button! (small button that's not px-captcha)")
+                        return elem, "frame"
+                except:
+                    continue
+        except Exception as e:
+            _log(job_id, f"PW: Error scanning frame elements: {str(e)[:100]}")
+    
+    # Tentar na página principal
+    for sel in selectors:
+        try:
+            elem = page.locator(sel).first
+            if elem.is_visible(timeout=1000):
+                _log(job_id, f"PW: Accessibility button found in page via '{sel}'")
+                return elem, "page"
+        except:
+            continue
+    
+    return None, None
+
+
+def _try_accessible_challenge(page, frame, iframe_handle, job_id):
+    """
+    Try the accessible challenge flow:
+    1. Click accessibility icon
+    2. Wait for bar to auto-fill
+    3. Click when it says "Clique novamente" / "Click again"
+    
+    Returns True if solved.
+    """
+    _log(job_id, "PW: Trying ACCESSIBLE challenge flow...")
+    
+    # Step 1: Find and click accessibility button
+    acc_btn, location = _find_accessibility_button(page, frame, job_id)
+    
+    if not acc_btn:
+        _log(job_id, "PW: Accessibility button NOT found", "warning")
+        return False
+    
+    try:
+        acc_btn.click(timeout=5000)
+        _log(job_id, "PW: Clicked accessibility button!")
+    except Exception as e:
+        _log(job_id, f"PW: Failed to click accessibility button: {str(e)[:100]}", "warning")
+        # Tentar via coordenadas
+        try:
+            box = acc_btn.bounding_box()
+            if box:
+                page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                _log(job_id, f"PW: Clicked accessibility via coordinates ({box['x']:.0f}, {box['y']:.0f})")
+        except:
+            return False
+    
+    time.sleep(2)
+    
+    # Step 2: Wait for the bar to auto-fill (up to 30s)
+    _log(job_id, "PW: Waiting for accessible bar to fill...")
+    
+    for wait_i in range(60):  # Check every 0.5s, up to 30s
+        time.sleep(0.5)
+        
+        # Check if already solved (URL changed)
+        try:
+            if "abuse" not in page.url.lower():
+                _log(job_id, f"PW: ✓ Solved during accessible wait! ({(wait_i+1)*0.5:.0f}s)")
+                return True
+        except:
+            pass
+        
+        # Check for "Click again" / "Clique novamente" text
+        try:
+            if frame:
+                px_text = frame.locator("#px-captcha").inner_text(timeout=1000)
+            else:
+                px_text = page.locator("#px-captcha").inner_text(timeout=1000)
+            
+            px_text_lower = px_text.lower().strip()
+            
+            if any(t in px_text_lower for t in ["click", "clique", "tap", "toque"]):
+                _log(job_id, f"PW: Bar filled! Text: '{px_text}' — clicking now!")
+                
+                # Step 3: Click the button
+                try:
+                    if frame:
+                        px_btn = frame.locator("#px-captcha")
+                    else:
+                        px_btn = page.locator("#px-captcha")
+                    
+                    px_btn.click(timeout=5000)
+                    _log(job_id, "PW: Clicked #px-captcha after fill!")
+                except:
+                    # Fallback: click via coordinates
+                    try:
+                        if frame:
+                            box = frame.locator("#px-captcha").bounding_box()
+                        else:
+                            box = page.locator("#px-captcha").bounding_box()
+                        if box:
+                            page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                            _log(job_id, "PW: Clicked via coordinates after fill!")
+                    except:
+                        pass
+                
+                # Wait for solve
+                for solve_wait in range(20):
+                    time.sleep(2)
+                    try:
+                        if "abuse" not in page.url.lower():
+                            _log(job_id, f"PW: ✓ Accessible challenge SOLVED! ({solve_wait*2}s after click)")
+                            return True
+                    except:
+                        pass
+                
+                _log(job_id, "PW: Clicked but still on abuse page...", "warning")
+                return False
+                
+        except:
+            pass
+        
+        # Every 5 seconds, log progress
+        if wait_i % 10 == 9:
+            _log(job_id, f"PW: Still waiting for bar to fill... ({(wait_i+1)*0.5:.0f}s)")
+    
+    _log(job_id, "PW: Accessible bar didn't fill in 30s", "warning")
+    return False
+
+
 def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> bool:
     """
     Try to solve PerimeterX CAPTCHA directly in Playwright.
-    Faster than UC but may fail due to fingerprinting.
-    Worth trying first before falling back to UC.
+    
+    Strategy order:
+    1. ACCESSIBLE CHALLENGE (click icon → wait bar fill → click again) — PREFERRED
+    2. CDP press-and-hold as fallback
     """
     _log(job_id, "PW: Attempting Playwright CAPTCHA solve...")
     _log(job_id, f"PW: Current URL: {page.url}")
@@ -734,8 +911,11 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
                 _log(job_id, "PW: No captcha iframe found after 10s")
                 continue
 
+            # === RESOLVE FRAME REFERENCE ===
+            frame = None
+            cx, cy = None, None
+            
             if iframe_handle == "INLINE":
-                # Press and hold diretamente no #px-captcha
                 px_btn = page.locator("#px-captcha")
                 btn_box = px_btn.bounding_box()
                 if not btn_box:
@@ -744,13 +924,11 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
                 cx = btn_box['x'] + btn_box['width'] / 2
                 cy = btn_box['y'] + btn_box['height'] / 2
             else:
-                # Get iframe bounding box
                 iframe_box = iframe_handle.bounding_box()
                 if not iframe_box or iframe_box['width'] < 50:
                     _log(job_id, f"PW: Iframe too small or invisible: {iframe_box}")
                     continue
 
-                # Try to find #px-captcha inside the iframe
                 frame_selector = ", ".join(iframe_selectors)
                 frame = page.frame_locator(frame_selector).first
                 px_btn = frame.locator("#px-captcha")
@@ -765,12 +943,23 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
                     cy = btn_box['y'] + btn_box['height'] / 2
                     _log(job_id, f"PW: #px-captcha box: {btn_box}")
                 else:
-                    # Fallback: center of iframe
                     cx = iframe_box['x'] + iframe_box['width'] / 2
                     cy = iframe_box['y'] + iframe_box['height'] / 2
                     _log(job_id, f"PW: Using iframe center as fallback. iframe_box={iframe_box}")
 
-            # Hold duration
+            # ============================================================
+            # STRATEGY 1: ACCESSIBLE CHALLENGE (preferred — no detection)
+            # Click accessibility icon → bar auto-fills → click again
+            # ============================================================
+            if attempt <= 4:  # Try accessible first
+                acc_solved = _try_accessible_challenge(page, frame, iframe_handle, job_id)
+                if acc_solved:
+                    return True
+                _log(job_id, "PW: Accessible challenge failed, trying press-and-hold...")
+
+            # ============================================================
+            # STRATEGY 2: CDP PRESS-AND-HOLD (fallback)
+            # ============================================================
             if attempt <= 2:
                 hold_dur = random.uniform(14, 18)
             else:
@@ -778,41 +967,30 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
 
             _log(job_id, f"PW: Press at ({cx:.0f}, {cy:.0f}) for {hold_dur:.1f}s [method=CDP]")
 
-            # Use CDP (Chrome DevTools Protocol) for mouse events
-            # CDP is lower-level than page.mouse and harder for PX to detect
-            cdp = page.context.browser.new_browser_cdp_session()
+            start = time.time()
+            solved = False
             
+            # Use CDP for mouse events (less detectable)
             try:
-                # Move mouse to position via CDP
+                cdp = page.context.browser.new_browser_cdp_session()
+                
                 cdp.send("Input.dispatchMouseEvent", {
-                    "type": "mouseMoved",
-                    "x": int(cx),
-                    "y": int(cy),
+                    "type": "mouseMoved", "x": int(cx), "y": int(cy),
                 })
                 time.sleep(random.uniform(0.15, 0.35))
                 
-                # Mouse down via CDP
                 cdp.send("Input.dispatchMouseEvent", {
-                    "type": "mousePressed",
-                    "x": int(cx),
-                    "y": int(cy),
-                    "button": "left",
-                    "clickCount": 1,
+                    "type": "mousePressed", "x": int(cx), "y": int(cy),
+                    "button": "left", "clickCount": 1,
                 })
                 
-                start = time.time()
-                solved = False
-
                 while time.time() - start < hold_dur:
                     time.sleep(random.uniform(0.3, 0.7))
-                    # Micro-movements via CDP (human hand tremor)
                     dx = random.choice([-2, -1, 0, 1, 2])
                     dy = random.choice([-1, 0, 1])
                     try:
                         cdp.send("Input.dispatchMouseEvent", {
-                            "type": "mouseMoved",
-                            "x": int(cx + dx),
-                            "y": int(cy + dy),
+                            "type": "mouseMoved", "x": int(cx + dx), "y": int(cy + dy),
                         })
                     except:
                         pass
@@ -823,23 +1001,18 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
                     except:
                         pass
 
-                # Mouse up via CDP
                 cdp.send("Input.dispatchMouseEvent", {
-                    "type": "mouseReleased",
-                    "x": int(cx),
-                    "y": int(cy),
-                    "button": "left",
-                    "clickCount": 1,
+                    "type": "mouseReleased", "x": int(cx), "y": int(cy),
+                    "button": "left", "clickCount": 1,
                 })
+                cdp.detach()
             except Exception as cdp_err:
-                _log(job_id, f"PW: CDP error: {str(cdp_err)[:150]}, falling back to page.mouse", "warning")
-                # Fallback to page.mouse if CDP fails
+                _log(job_id, f"PW: CDP error: {str(cdp_err)[:150]}, fallback page.mouse", "warning")
                 try:
                     page.mouse.move(cx, cy)
                     time.sleep(0.2)
                     page.mouse.down()
                     start = time.time()
-                    solved = False
                     while time.time() - start < hold_dur:
                         time.sleep(random.uniform(0.4, 0.8))
                         page.mouse.move(cx + random.choice([-2,-1,0,1,2]), cy + random.choice([-1,0,1]))
@@ -852,11 +1025,6 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
                     page.mouse.up()
                 except:
                     pass
-            finally:
-                try:
-                    cdp.detach()
-                except:
-                    pass
             
             elapsed = time.time() - start
             _log(job_id, f"PW: Released after {elapsed:.1f}s, solved={solved}")
@@ -866,7 +1034,7 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
                 return True
 
             # Wait and check
-            for wait_i in range(10):
+            for wait_i in range(8):
                 time.sleep(5)
                 try:
                     if "abuse" not in page.url.lower():
