@@ -880,6 +880,41 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
     except Exception as e:
         _log(job_id, f"PW: Error in deep scan: {str(e)[:150]}")
     
+    # === STRATEGY 5: Click by coordinates relative to #px-captcha ===
+    # O botão de acessibilidade é renderizado pelo JS do PX como parte visual
+    # Fica à ESQUERDA da barra "Pressione e segure", ~40px antes do início
+    # É um ícone circular ~35px de diâmetro
+    try:
+        _log(job_id, "PW: Strategy 5 — clicking accessibility by coordinates (left of #px-captcha)...")
+        
+        # Pegar box do px-captcha (pode estar no iframe ou na página)
+        px_box = None
+        if frame_locator:
+            try:
+                px_box = frame_locator.locator("#px-captcha").bounding_box(timeout=3000)
+            except:
+                pass
+        if not px_box:
+            try:
+                px_box = page.locator("#px-captcha").bounding_box()
+            except:
+                pass
+        
+        if px_box:
+            # O ícone de acessibilidade fica ~25px à esquerda do px-captcha, centralizado verticalmente
+            # Tamanho do ícone: ~35x35px
+            icon_x = px_box['x'] - 25  # 25px à esquerda do início da barra
+            icon_y = px_box['y'] + px_box['height'] / 2  # centralizado verticalmente
+            
+            _log(job_id, f"PW: px-captcha box={px_box}, clicking accessibility icon at ({icon_x:.0f}, {icon_y:.0f})")
+            page.mouse.click(icon_x, icon_y)
+            _log(job_id, "PW: Clicked accessibility by coords!")
+            return True, "clicked_directly"
+        else:
+            _log(job_id, "PW: Could not get px-captcha bounding box", "warning")
+    except Exception as e:
+        _log(job_id, f"PW: Error in coordinate click: {str(e)[:100]}")
+    
     _log(job_id, "PW: Accessibility button NOT found anywhere", "warning")
     return None, None
 
