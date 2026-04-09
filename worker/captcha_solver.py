@@ -408,10 +408,12 @@ def _do_press_and_hold(driver, captcha_iframe, attempt_num, job_id=""):
     return solved
 
 
-def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_id: str = "") -> bool:
+def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_id: str = "", abuse_url: str = "") -> bool:
     """
     Solve the PerimeterX CAPTCHA using undetected-chromedriver.
-    Logs into the account, handles the Abuse page + CAPTCHA.
+    
+    If abuse_url is provided, navigates directly to it (skips login).
+    Otherwise, logs into the account and handles the Abuse page.
     
     Returns True if account was unlocked, False if failed.
     """
@@ -441,18 +443,22 @@ def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_
 
         _log(job_id, "Starting UC Chrome...")
         driver = uc.Chrome(**uc_kwargs)
-        driver.set_page_load_timeout(30)
+        driver.set_page_load_timeout(45)
 
         # === Step 1: Login ===
         _log(job_id, f"UC: Navigating to login... email={email}")
         driver.get("https://login.live.com/")
         time.sleep(random.uniform(2, 4))
 
-        # Log current state
         _log(job_id, f"UC: Login page URL: {driver.current_url}")
 
         # Email
-        email_input = driver.find_element(By.CSS_SELECTOR, "input[type=email]")
+        try:
+            email_input = driver.find_element(By.CSS_SELECTOR, "input[type=email]")
+        except:
+            _log(job_id, f"UC: No email input found. URL: {driver.current_url}", "warning")
+            return False
+        
         for char in email:
             email_input.send_keys(char)
             time.sleep(random.uniform(0.03, 0.08))
@@ -466,24 +472,27 @@ def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_
 
         _log(job_id, f"UC: After email submit, URL: {driver.current_url}")
 
-        # Password
-        _log(job_id, "UC: Entering password...")
-        try:
-            pwd_input = driver.find_element(By.CSS_SELECTOR, "input[type=password]")
-        except:
-            # Pode ser que não tem campo de password (conta bloqueada antes do password)
-            url_now = driver.current_url.lower()
-            _log(job_id, f"UC: No password field found. URL: {driver.current_url}", "warning")
-            if "abuse" in url_now:
-                _log(job_id, "UC: Bloqueado ANTES do password! Indo direto pro CAPTCHA...")
-                # Pular direto pro CAPTCHA
-                pwd_input = None
-            else:
-                body_text = driver.find_element(By.TAG_NAME, "body").text[:500]
-                _log(job_id, f"UC: Body text: {body_text[:300]}", "warning")
+        # Check if we hit abuse even before password
+        url_now = driver.current_url.lower()
+        if "abuse" in url_now:
+            _log(job_id, "UC: Bloqueado ANTES do password! Indo direto pro CAPTCHA...")
+        else:
+            # Password
+            _log(job_id, "UC: Entering password...")
+            try:
+                pwd_input = driver.find_element(By.CSS_SELECTOR, "input[type=password]")
+            except:
+                _log(job_id, f"UC: No password field found. URL: {driver.current_url}", "warning")
+                try:
+                    body_text = driver.find_element(By.TAG_NAME, "body").text[:500]
+                    _log(job_id, f"UC: Body text: {body_text[:300]}", "warning")
+                except:
+                    pass
+                # If we're at identity verification, this UC attempt won't work
+                if "identity" in url_now or "proofs" in url_now or "verify" in url_now:
+                    _log(job_id, "UC: Hit identity verification — UC can't solve this, returning False", "warning")
                 return False
-        
-        if pwd_input:
+            
             for char in password:
                 pwd_input.send_keys(char)
                 time.sleep(random.uniform(0.03, 0.08))
@@ -507,9 +516,16 @@ def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_
         url = driver.current_url.lower()
         _log(job_id, f"UC: Post-login URL: {driver.current_url}")
 
-        # If not on abuse page, account is already unlocked
+        # If not on abuse page, check what happened
         if "abuse" not in url:
-            _log(job_id, "UC: No abuse page — account already unlocked!")
+            if "outlook" in url or "mail" in url:
+                _log(job_id, "UC: No abuse page — account already unlocked!")
+                return True
+            if "identity" in url or "proofs" in url:
+                _log(job_id, "UC: Hit identity verification instead of abuse — can't proceed", "warning")
+                return False
+            _log(job_id, f"UC: Unexpected URL after login: {url}", "warning")
+            # Could still be resolved, return True if not abuse
             return True
 
         # === Step 2: Handle the abuse intro page ===
@@ -760,31 +776,88 @@ def solve_captcha_playwright(page, max_attempts: int = 4, job_id: str = "") -> b
             else:
                 hold_dur = random.uniform(18, 24)
 
-            _log(job_id, f"PW: Press at ({cx:.0f}, {cy:.0f}) for {hold_dur:.1f}s")
+            _log(job_id, f"PW: Press at ({cx:.0f}, {cy:.0f}) for {hold_dur:.1f}s [method=CDP]")
 
-            # Move to position
-            page.mouse.move(cx, cy)
-            time.sleep(random.uniform(0.2, 0.4))
+            # Use CDP (Chrome DevTools Protocol) for mouse events
+            # CDP is lower-level than page.mouse and harder for PX to detect
+            cdp = page.context.browser.new_browser_cdp_session()
             
-            # Press and hold
-            page.mouse.down()
-            start = time.time()
-            solved = False
+            try:
+                # Move mouse to position via CDP
+                cdp.send("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved",
+                    "x": int(cx),
+                    "y": int(cy),
+                })
+                time.sleep(random.uniform(0.15, 0.35))
+                
+                # Mouse down via CDP
+                cdp.send("Input.dispatchMouseEvent", {
+                    "type": "mousePressed",
+                    "x": int(cx),
+                    "y": int(cy),
+                    "button": "left",
+                    "clickCount": 1,
+                })
+                
+                start = time.time()
+                solved = False
 
-            while time.time() - start < hold_dur:
-                time.sleep(random.uniform(0.4, 0.8))
-                page.mouse.move(
-                    cx + random.choice([-2, -1, 0, 1, 2]),
-                    cy + random.choice([-1, 0, 1])
-                )
+                while time.time() - start < hold_dur:
+                    time.sleep(random.uniform(0.3, 0.7))
+                    # Micro-movements via CDP (human hand tremor)
+                    dx = random.choice([-2, -1, 0, 1, 2])
+                    dy = random.choice([-1, 0, 1])
+                    try:
+                        cdp.send("Input.dispatchMouseEvent", {
+                            "type": "mouseMoved",
+                            "x": int(cx + dx),
+                            "y": int(cy + dy),
+                        })
+                    except:
+                        pass
+                    try:
+                        if "abuse" not in page.url.lower():
+                            solved = True
+                            break
+                    except:
+                        pass
+
+                # Mouse up via CDP
+                cdp.send("Input.dispatchMouseEvent", {
+                    "type": "mouseReleased",
+                    "x": int(cx),
+                    "y": int(cy),
+                    "button": "left",
+                    "clickCount": 1,
+                })
+            except Exception as cdp_err:
+                _log(job_id, f"PW: CDP error: {str(cdp_err)[:150]}, falling back to page.mouse", "warning")
+                # Fallback to page.mouse if CDP fails
                 try:
-                    if "abuse" not in page.url.lower():
-                        solved = True
-                        break
+                    page.mouse.move(cx, cy)
+                    time.sleep(0.2)
+                    page.mouse.down()
+                    start = time.time()
+                    solved = False
+                    while time.time() - start < hold_dur:
+                        time.sleep(random.uniform(0.4, 0.8))
+                        page.mouse.move(cx + random.choice([-2,-1,0,1,2]), cy + random.choice([-1,0,1]))
+                        try:
+                            if "abuse" not in page.url.lower():
+                                solved = True
+                                break
+                        except:
+                            pass
+                    page.mouse.up()
                 except:
                     pass
-
-            page.mouse.up()
+            finally:
+                try:
+                    cdp.detach()
+                except:
+                    pass
+            
             elapsed = time.time() - start
             _log(job_id, f"PW: Released after {elapsed:.1f}s, solved={solved}")
 

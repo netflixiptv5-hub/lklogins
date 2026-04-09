@@ -2988,14 +2988,15 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Post-login state: {state}")
             
             if state == "abuse":
-                update_job(job_id, "connecting", eta=90,
+                update_job(job_id, "connecting", eta=120,
                            message="Processando verificação... aguarde um momento.")
                 
-                # Step 1: Try Playwright solver directly on current page
-                logger.info(f"[{job_id}] Abuse detected, trying Playwright CAPTCHA solver...")
+                # Step 1: Try Playwright solver directly on current page (CDP method)
+                # More attempts since PW now uses CDP for mouse events (less detectable)
+                logger.info(f"[{job_id}] Abuse detected, trying Playwright CAPTCHA solver (CDP)...")
                 try:
                     from captcha_solver import solve_captcha_playwright
-                    if solve_captcha_playwright(page, max_attempts=3, job_id=job_id):
+                    if solve_captcha_playwright(page, max_attempts=6, job_id=job_id):
                         logger.info(f"[{job_id}] ✓ Playwright CAPTCHA solved!")
                         state = handle_post_login(page, job_id)
                         if state != "abuse":
@@ -3004,9 +3005,9 @@ def process_job(job_id: str, email_addr: str, service: str):
                 except Exception as e:
                     logger.warning(f"[{job_id}] Playwright solver error: {e}")
                 
-                # Step 2: If still abuse, use UC (separate browser)
+                # Step 2: If still abuse, use UC (separate browser) as last resort
                 if state == "abuse":
-                    abuse_max_retries = 2
+                    abuse_max_retries = 1
                     for abuse_attempt in range(1, abuse_max_retries + 1):
                         logger.info(f"[{job_id}] Trying UC solver, attempt {abuse_attempt}/{abuse_max_retries}...")
                         update_job(job_id, "connecting", eta=60 + abuse_attempt * 40,
