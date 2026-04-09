@@ -676,13 +676,23 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
             except:
                 continue
         
-        # Log iframe content for debugging
+        # Log FULL iframe content for debugging
         try:
-            # Pegar o HTML do iframe pra entender a estrutura
             iframe_html = frame_locator.locator("body").inner_html(timeout=3000)
-            _log(job_id, f"PW: iframe HTML (500): {iframe_html[:500]}")
+            _log(job_id, f"PW: iframe FULL HTML: {iframe_html[:1500]}")
         except Exception as e:
             _log(job_id, f"PW: Couldn't read iframe HTML: {str(e)[:80]}")
+        
+        # Tentar via page.frames também
+        try:
+            for f in page.frames:
+                fu = f.url.lower()
+                if any(k in fu for k in ['hsprotect', 'enforcement', 'captcha', 'perimeterx']):
+                    full_html = f.evaluate("() => document.documentElement.outerHTML.substring(0, 3000)")
+                    _log(job_id, f"PW: frame FULL doc HTML: {full_html[:1500]}")
+                    break
+        except:
+            pass
     
     # === STRATEGY 2: Buscar via page.frames() (acessa os frames reais) ===
     try:
@@ -786,24 +796,34 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
     except Exception as e:
         _log(job_id, f"PW: Error scanning main page: {str(e)[:100]}")
     
-    # === STRATEGY 4: Deep scan inside #px-captcha div and its parent ===
-    # O botão de acessibilidade pode estar DENTRO do div#px-captcha ou num sibling
+    # === STRATEGY 4: Deep scan inside the CAPTCHA frame via page.frames ===
     try:
-        _log(job_id, "PW: Deep scanning #px-captcha div and siblings on main page...")
+        _log(job_id, "PW: Deep scanning inside captcha frame via page.frames...")
         
-        # Pegar todo o HTML da área do captcha (pai do #px-captcha)
-        parent_html = page.evaluate("""() => {
-            const px = document.getElementById('px-captcha');
-            if (!px) return 'NO #px-captcha found';
-            // Pegar o HTML do pai (que contém o px-captcha + possíveis irmãos)
-            const parent = px.parentElement;
-            if (parent) return parent.outerHTML.substring(0, 2000);
-            return px.outerHTML.substring(0, 2000);
-        }""")
+        # Buscar o frame real e escanear via JS
+        parent_html = "NOT_FOUND"
+        for f in page.frames:
+            fu = f.url.lower()
+            if any(k in fu for k in ['hsprotect', 'enforcement', 'captcha', 'perimeterx']):
+                parent_html = f.evaluate("""() => {
+                    const px = document.getElementById('px-captcha');
+                    if (!px) return 'NO #px-captcha in frame';
+                    const parent = px.parentElement || document.body;
+                    return parent.outerHTML.substring(0, 2000);
+                }""")
+                break
         _log(job_id, f"PW: #px-captcha parent HTML: {parent_html[:800]}")
         
-        # Listar TODOS os sub-elementos do pai do #px-captcha
-        child_info = page.evaluate("""() => {
+        # Listar TODOS os sub-elementos do pai do #px-captcha (dentro do frame)
+        target_frame = None
+        for f in page.frames:
+            fu = f.url.lower()
+            if any(k in fu for k in ['hsprotect', 'enforcement', 'captcha', 'perimeterx']):
+                target_frame = f
+                break
+        
+        eval_target = target_frame if target_frame else page
+        child_info = eval_target.evaluate("""() => {
             const px = document.getElementById('px-captcha');
             if (!px) return [];
             const parent = px.parentElement || document.body;
