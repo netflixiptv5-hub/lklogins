@@ -1426,28 +1426,16 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
     logger.info(f"[{job_id}] Found {len(email_items)} results")
     
     # Two-pass: first try pattern-matched emails, then any email from the search
-    # Também filtra por data — só emails recentes (SEARCH_MINUTES)
+    # Date filter REMOVED — search already returns sorted by date, extract_email_content validates content
+    # Expired check still happens after extraction
     now = datetime.now()
     matched_indices = []
     fallback_indices = []
     email_times = {}  # idx -> hora do email (ex: "6:46 pm")
-    NETFLIX_SERVICES = {"password_reset", "household_update", "temp_code", "netflix_disconnect"}
-    apply_time_filter = True  # aplica pra todos os serviços
 
     for idx, item in enumerate(email_items[:15]):
         try:
             text = ((item.text_content() or "") + " " + (item.get_attribute("aria-label") or "")).lower()
-            # Filtro de tempo: Outlook mostra hora (ex: "14:32") pra emails de hoje
-            # Se mostrar data (ex: "ontem", "seg", "07/04") é antigo — pula
-            if apply_time_filter:
-                import re as _re
-                # Hora no formato HH:MM = email de hoje
-                has_time = bool(_re.search(r'\b\d{1,2}:\d{2}\b', text))
-                # Data explicita = antigo
-                has_date = bool(_re.search(r'\b(ontem|yesterday|seg|ter|qua|qui|sex|sáb|dom|mon|tue|wed|thu|fri|sat|sun|\d{1,2}/\d{1,2})\b', text))
-                if has_date and not has_time:
-                    logger.info(f"[{job_id}] Pulando email antigo #{idx}")
-                    continue
 
             # Guardar hora do email pra calcular expired depois
             import re as _re2
