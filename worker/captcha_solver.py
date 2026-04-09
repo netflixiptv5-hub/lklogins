@@ -786,6 +786,80 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
     except Exception as e:
         _log(job_id, f"PW: Error scanning main page: {str(e)[:100]}")
     
+    # === STRATEGY 4: Deep scan inside #px-captcha div and its parent ===
+    # O botão de acessibilidade pode estar DENTRO do div#px-captcha ou num sibling
+    try:
+        _log(job_id, "PW: Deep scanning #px-captcha div and siblings on main page...")
+        
+        # Pegar todo o HTML da área do captcha (pai do #px-captcha)
+        parent_html = page.evaluate("""() => {
+            const px = document.getElementById('px-captcha');
+            if (!px) return 'NO #px-captcha found';
+            // Pegar o HTML do pai (que contém o px-captcha + possíveis irmãos)
+            const parent = px.parentElement;
+            if (parent) return parent.outerHTML.substring(0, 2000);
+            return px.outerHTML.substring(0, 2000);
+        }""")
+        _log(job_id, f"PW: #px-captcha parent HTML: {parent_html[:800]}")
+        
+        # Listar TODOS os sub-elementos do pai do #px-captcha
+        child_info = page.evaluate("""() => {
+            const px = document.getElementById('px-captcha');
+            if (!px) return [];
+            const parent = px.parentElement || document.body;
+            const results = [];
+            const scan = (el, depth) => {
+                if (depth > 5) return;
+                const rect = el.getBoundingClientRect();
+                const info = {
+                    tag: el.tagName,
+                    id: el.id || '',
+                    cls: (el.className || '').toString().substring(0, 80),
+                    aria: el.getAttribute('aria-label') || '',
+                    title: el.getAttribute('title') || '',
+                    role: el.getAttribute('role') || '',
+                    tabindex: el.getAttribute('tabindex') || '',
+                    w: Math.round(rect.width),
+                    h: Math.round(rect.height),
+                    x: Math.round(rect.x),
+                    y: Math.round(rect.y),
+                    visible: rect.width > 0 && rect.height > 0 && el.offsetParent !== null,
+                    depth: depth
+                };
+                results.push(info);
+                for (const child of el.children) {
+                    scan(child, depth + 1);
+                }
+            };
+            scan(parent, 0);
+            return results;
+        }""")
+        
+        _log(job_id, f"PW: {len(child_info)} elements in px-captcha parent tree")
+        for info in child_info:
+            prefix = "  " * info.get('depth', 0)
+            vis = "✓" if info.get('visible') else "✗"
+            _log(job_id, f"  {prefix}{vis} <{info['tag']}> id={info['id']} cls={info['cls'][:30]} aria={info['aria'][:20]} role={info['role']} tab={info['tabindex']} size={info['w']}x{info['h']} pos=({info['x']},{info['y']})")
+            
+            # Detectar botão de acessibilidade
+            is_acc = any(k in (info['aria'] + info['cls'] + info['title'] + info['id']).lower() for k in ['ccessib', 'a11y', 'wheelchair'])
+            is_clickable = info['tag'] in ['BUTTON', 'A', 'SPAN', 'DIV', 'IMG', 'SVG'] and info['visible'] and info['w'] > 10 and info['w'] < 80
+            is_not_captcha = info['id'] != 'px-captcha'
+            # Também detectar por role ou tabindex
+            has_interaction = info['role'] in ['button', 'link'] or info['tabindex'] in ['0', '-1']
+            
+            if is_not_captcha and info['visible'] and (is_acc or (is_clickable and has_interaction)):
+                _log(job_id, f"PW: → POSSIBLE ACCESSIBILITY BUTTON in parent tree! <{info['tag']}> id={info['id']} pos=({info['x']},{info['y']})")
+                # Clicar via coordenadas
+                try:
+                    page.mouse.click(info['x'] + info['w']/2, info['y'] + info['h']/2)
+                    _log(job_id, f"PW: Clicked at ({info['x'] + info['w']/2:.0f}, {info['y'] + info['h']/2:.0f})")
+                    return True, "clicked_directly"  # Signal that we already clicked
+                except Exception as ce:
+                    _log(job_id, f"PW: Click failed: {str(ce)[:80]}")
+    except Exception as e:
+        _log(job_id, f"PW: Error in deep scan: {str(e)[:150]}")
+    
     _log(job_id, "PW: Accessibility button NOT found anywhere", "warning")
     return None, None
 
@@ -804,40 +878,41 @@ def _try_accessible_challenge(page, frame_locator, iframe_handle, job_id):
     # Step 1: Find and click accessibility button
     acc_btn, location = _find_accessibility_button(page, frame_locator, iframe_handle, job_id)
     
-    if not acc_btn:
+    if not acc_btn and location != "clicked_directly":
         return False
     
-    # Click the accessibility button
-    try:
-        if location == "element_handle":
-            # ElementHandle from page.frames scan
-            box = acc_btn.bounding_box()
-            if box:
-                # Clicar via mouse.click nas coordenadas (mais confiável pra ElementHandle)
-                page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                _log(job_id, f"PW: Clicked accessibility via coords ({box['x'] + box['width']/2:.0f}, {box['y'] + box['height']/2:.0f})")
-            else:
-                acc_btn.click()
-                _log(job_id, "PW: Clicked accessibility ElementHandle directly")
-        elif location == "frame":
-            # FrameLocator element
-            try:
-                acc_btn.click(timeout=5000)
-                _log(job_id, "PW: Clicked accessibility in frame!")
-            except:
+    # If already clicked directly (from deep scan Strategy 4), skip to waiting
+    already_clicked = (location == "clicked_directly")
+    
+    # Click the accessibility button (unless already clicked)
+    if not already_clicked:
+        try:
+            if location == "element_handle":
                 box = acc_btn.bounding_box()
                 if box:
                     page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                    _log(job_id, f"PW: Clicked accessibility via coords fallback")
+                    _log(job_id, f"PW: Clicked accessibility via coords ({box['x'] + box['width']/2:.0f}, {box['y'] + box['height']/2:.0f})")
                 else:
-                    _log(job_id, "PW: Could not click accessibility button", "warning")
-                    return False
-        else:
-            acc_btn.click(timeout=5000)
-            _log(job_id, "PW: Clicked accessibility button!")
-    except Exception as e:
-        _log(job_id, f"PW: Failed to click accessibility: {str(e)[:100]}", "warning")
-        return False
+                    acc_btn.click()
+                    _log(job_id, "PW: Clicked accessibility ElementHandle directly")
+            elif location == "frame":
+                try:
+                    acc_btn.click(timeout=5000)
+                    _log(job_id, "PW: Clicked accessibility in frame!")
+                except:
+                    box = acc_btn.bounding_box()
+                    if box:
+                        page.mouse.click(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                        _log(job_id, "PW: Clicked accessibility via coords fallback")
+                    else:
+                        _log(job_id, "PW: Could not click accessibility button", "warning")
+                        return False
+            else:
+                acc_btn.click(timeout=5000)
+                _log(job_id, "PW: Clicked accessibility button!")
+        except Exception as e:
+            _log(job_id, f"PW: Failed to click accessibility: {str(e)[:100]}", "warning")
+            return False
     
     time.sleep(2)
     
