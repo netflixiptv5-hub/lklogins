@@ -2661,16 +2661,6 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 def process_job(job_id: str, email_addr: str, service: str):
     """Main job processor — routes to IMAP direct, Gmail, or API+browser based on email."""
 
-    # === AUTO-TRIGGER NETFLIX RESET (só pra password_reset) ===
-    if service == "password_reset":
-        logger.info(f"[{job_id}] Auto-triggering Netflix password reset for {email_addr}...")
-        triggered = trigger_netflix_reset(email_addr, job_id)
-        if triggered:
-            logger.info(f"[{job_id}] Reset disparado, aguardando 8s para email chegar...")
-            time.sleep(8)
-        else:
-            logger.warning(f"[{job_id}] trigger_reset falhou — tentando buscar email existente mesmo assim")
-
     # === CHECK IF IMAP DIRECT (no MS login needed) ===
     if is_imap_direct_email(email_addr):
         logger.info(f"[{job_id}] IMAP direct route for {email_addr}")
