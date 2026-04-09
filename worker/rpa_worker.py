@@ -743,30 +743,95 @@ def _try_skip_security_prompt(page, job_id: str) -> bool:
     
     def _try_redirect():
         logger.info(f"[{job_id}] Security prompt, tentando redirect pro Outlook...")
-        try:
-            # Usa /mail/ sem o 0/ — funciona melhor quando tem identity/confirm
-            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
-            time.sleep(6)
-            final_url = page.url.lower()
-            # Verifica se REALMENTE tá no Outlook (não redirecionou pra marketing/login)
-            if "outlook.live.com/mail" in final_url:
-                # Verifica se tem elementos do Outlook (search box, mail list, etc)
-                try:
-                    has_inbox = page.locator("[role='option'], [aria-label*='earch'], [aria-label*='esquis'], button[aria-label*='New mail'], button[aria-label*='Nova']").first.is_visible(timeout=3000)
-                    if has_inbox:
-                        logger.info(f"[{job_id}] Redirect to Outlook OK! Inbox confirmed.")
-                        return True
-                except:
-                    pass
-                # URL parece ok mas não confirmou inbox — aceita mesmo assim
-                logger.info(f"[{job_id}] Redirect to Outlook OK (URL match)")
-                return True
-            else:
-                logger.warning(f"[{job_id}] Redirect falhou, caiu em: {final_url}")
-                return False
-        except Exception as e:
-            logger.warning(f"[{job_id}] Redirect exception: {e}")
-            return False
+        
+        # Primeiro, tentar clicar botões de skip na página de security (Remind me later, Skip, etc)
+        for skip_text in ["Remind me later", "Lembrar mais tarde", "Skip", "Pular", "Cancel", "Cancelar", 
+                          "I want to setup a different method", "Looks good", "Parece bom"]:
+            try:
+                btn = page.get_by_role("button", name=skip_text)
+                if btn.is_visible(timeout=1000):
+                    btn.click()
+                    logger.info(f"[{job_id}] Clicou botão '{skip_text}' na security page")
+                    time.sleep(3)
+                    break
+            except:
+                continue
+        # Tentar links de skip
+        for skip_text in ["remind me later", "lembrar mais tarde", "skip for now", "pular por agora"]:
+            try:
+                link = page.locator(f"a:has-text('{skip_text}')").first
+                if link.is_visible(timeout=1000):
+                    link.click()
+                    logger.info(f"[{job_id}] Clicou link '{skip_text}' na security page")
+                    time.sleep(3)
+                    break
+            except:
+                continue
+        # Tentar #iCancel, #iLooksGood
+        for sel in ["#iCancel", "#iLooksGood", "#iLandingViewAction", "#CancelLinkButton",
+                     "a[id*='cancel']", "a[id*='Cancel']", "a[id*='skip']", "a[id*='Skip']"]:
+            try:
+                elem = page.locator(sel)
+                if elem.is_visible(timeout=1000):
+                    elem.click()
+                    logger.info(f"[{job_id}] Clicou '{sel}' na security page")
+                    time.sleep(3)
+                    break
+            except:
+                continue
+        
+        # Checar se saiu da security page
+        url_now = page.url.lower()
+        if "outlook.live.com/mail" in url_now:
+            logger.info(f"[{job_id}] Skip funcionou! Já está no Outlook.")
+            return True
+        if not _is_security_page(url_now) and "login.live" not in url_now and "microsoft-365" not in url_now:
+            logger.info(f"[{job_id}] Skip funcionou, URL: {page.url}")
+            # Agora navegar pro Outlook
+        
+        # Tentar múltiplas URLs do Outlook
+        outlook_urls = [
+            "https://outlook.live.com/mail/",
+            "https://outlook.live.com/mail/0/",
+            "https://outlook.live.com/owa/",
+        ]
+        
+        for outlook_url in outlook_urls:
+            try:
+                logger.info(f"[{job_id}] Tentando redirect para {outlook_url}...")
+                page.goto(outlook_url, timeout=25000, wait_until="domcontentloaded")
+                time.sleep(6)
+                final_url = page.url.lower()
+                
+                if "outlook.live.com/mail" in final_url or "outlook.live.com/owa" in final_url:
+                    # Verifica se tem elementos do Outlook
+                    try:
+                        has_inbox = page.locator("[role='option'], [aria-label*='earch'], [aria-label*='esquis'], button[aria-label*='New mail'], button[aria-label*='Nova']").first.is_visible(timeout=3000)
+                        if has_inbox:
+                            logger.info(f"[{job_id}] Redirect to Outlook OK! Inbox confirmed via {outlook_url}")
+                            return True
+                    except:
+                        pass
+                    logger.info(f"[{job_id}] Redirect to Outlook OK (URL match) via {outlook_url}")
+                    return True
+                else:
+                    logger.warning(f"[{job_id}] Redirect para {outlook_url} falhou, caiu em: {final_url}")
+                    # Se caiu na identity/confirm de novo, tenta clicar skip antes de tentar próxima URL
+                    if _is_security_page(final_url):
+                        for skip_sel in ["#iCancel", "#iLooksGood", "#CancelLinkButton"]:
+                            try:
+                                elem = page.locator(skip_sel)
+                                if elem.is_visible(timeout=1000):
+                                    elem.click()
+                                    time.sleep(3)
+                                    break
+                            except:
+                                continue
+            except Exception as e:
+                logger.warning(f"[{job_id}] Redirect {outlook_url} exception: {str(e)[:100]}")
+        
+        logger.warning(f"[{job_id}] Todas as tentativas de redirect falharam. URL final: {page.url}")
+        return False
 
     url = page.url.lower()
     if _is_security_page(url):
@@ -1281,7 +1346,7 @@ def solve_abuse_with_uc(email_addr: str, job_id: str, page=None) -> bool:
         try:
             from captcha_solver import solve_captcha_playwright
             logger.info(f"[{job_id}] Trying Playwright CAPTCHA solver first...")
-            if solve_captcha_playwright(page, max_attempts=3):
+            if solve_captcha_playwright(page, max_attempts=3, job_id=job_id):
                 logger.info(f"[{job_id}] ✓ Playwright CAPTCHA solved!")
                 return True
             logger.info(f"[{job_id}] Playwright solver failed, falling back to UC...")
@@ -1292,7 +1357,7 @@ def solve_abuse_with_uc(email_addr: str, job_id: str, page=None) -> bool:
     try:
         from captcha_solver import solve_captcha_with_uc
         logger.info(f"[{job_id}] Solving abuse with UC (max 5 attempts)...")
-        return solve_captcha_with_uc(email_addr, HOTMAIL_PASSWORD, max_attempts=5)
+        return solve_captcha_with_uc(email_addr, HOTMAIL_PASSWORD, max_attempts=5, job_id=job_id)
     except Exception as e:
         logger.error(f"[{job_id}] UC solve error: {e}")
         return False
@@ -2930,7 +2995,7 @@ def process_job(job_id: str, email_addr: str, service: str):
                 logger.info(f"[{job_id}] Abuse detected, trying Playwright CAPTCHA solver...")
                 try:
                     from captcha_solver import solve_captcha_playwright
-                    if solve_captcha_playwright(page, max_attempts=3):
+                    if solve_captcha_playwright(page, max_attempts=3, job_id=job_id):
                         logger.info(f"[{job_id}] ✓ Playwright CAPTCHA solved!")
                         state = handle_post_login(page, job_id)
                         if state != "abuse":
