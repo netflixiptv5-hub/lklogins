@@ -1290,11 +1290,26 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
     _search_deadline = time.time() + 30  # 30s max
     logger.info(f"[{job_id}] Going to Outlook...")
     
-    try:
-        page.goto("https://outlook.live.com/mail/0/", timeout=30000, wait_until="domcontentloaded")
-    except:
-        pass
-    time.sleep(4)
+    # Tenta /mail/0/ primeiro, se falhar tenta /mail/
+    current_url = page.url.lower()
+    if "outlook.live.com/mail" in current_url:
+        logger.info(f"[{job_id}] Already in Outlook, skipping navigation")
+    else:
+        try:
+            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+        except:
+            pass
+        time.sleep(4)
+        
+        # Se redirecionou pra fora do Outlook, tenta /mail/ (sem o 0)
+        url_check = page.url.lower()
+        if "outlook.live.com/mail" not in url_check:
+            logger.info(f"[{job_id}] /mail/0/ falhou ({url_check}), tentando /mail/...")
+            try:
+                page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
+            except:
+                pass
+            time.sleep(4)
     
     # Dismiss any popups/overlays
     page.evaluate("""() => {
@@ -2632,6 +2647,12 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
             page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
             time.sleep(8)
 
+        # Se /mail/0/ falhou, tenta /mail/
+        if "outlook.live.com/mail" not in page.url.lower():
+            logger.info(f"[{job_id}] Code login: /mail/0/ falhou, tentando /mail/...")
+            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
+            time.sleep(6)
+
         if "outlook.live.com" not in page.url.lower():
             logger.error(f"[{job_id}] Code login: not on Outlook after login: {page.url}")
             update_job(job_id, "error",
@@ -2774,6 +2795,13 @@ def process_job(job_id: str, email_addr: str, service: str):
                 time.sleep(8)
                 
                 url_after = page.url.lower()
+                # Se /mail/0/ falhou, tenta /mail/
+                if "outlook.live.com/mail" not in url_after:
+                    logger.info(f"[{job_id}] Cookie cache: /mail/0/ falhou ({url_after}), tentando /mail/...")
+                    page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
+                    time.sleep(6)
+                    url_after = page.url.lower()
+                
                 # Se redirecionou pra login/identity/microsoft365 = cookies expirados
                 if any(x in url_after for x in ["login.live", "identity/confirm", "microsoft.com/en", "microsoft-365"]):
                     logger.info(f"[{job_id}] Cookie cache: redirecionou pra login ({url_after}), cookies expirados")
