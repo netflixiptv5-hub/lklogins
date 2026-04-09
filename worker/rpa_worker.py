@@ -1274,12 +1274,25 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         return False
 
 
-def solve_abuse_with_uc(email_addr: str, job_id: str) -> bool:
-    """Solve abuse/CAPTCHA using undetected-chromedriver."""
+def solve_abuse_with_uc(email_addr: str, job_id: str, page=None) -> bool:
+    """Solve abuse/CAPTCHA. Tries Playwright first (if page given), then UC."""
+    # Step 1: Try Playwright solver (faster, no extra browser)
+    if page is not None:
+        try:
+            from captcha_solver import solve_captcha_playwright
+            logger.info(f"[{job_id}] Trying Playwright CAPTCHA solver first...")
+            if solve_captcha_playwright(page, max_attempts=3):
+                logger.info(f"[{job_id}] ✓ Playwright CAPTCHA solved!")
+                return True
+            logger.info(f"[{job_id}] Playwright solver failed, falling back to UC...")
+        except Exception as e:
+            logger.warning(f"[{job_id}] Playwright solver error: {e}")
+
+    # Step 2: Fall back to undetected-chromedriver
     try:
         from captcha_solver import solve_captcha_with_uc
-        logger.info(f"[{job_id}] Solving abuse with UC...")
-        return solve_captcha_with_uc(email_addr, HOTMAIL_PASSWORD, max_attempts=3)
+        logger.info(f"[{job_id}] Solving abuse with UC (max 5 attempts)...")
+        return solve_captcha_with_uc(email_addr, HOTMAIL_PASSWORD, max_attempts=5)
     except Exception as e:
         logger.error(f"[{job_id}] UC solve error: {e}")
         return False
@@ -2910,50 +2923,66 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Post-login state: {state}")
             
             if state == "abuse":
-                # Silent retry — don't show error to user, just extend the wait
-                abuse_max_retries = 2
-                for abuse_attempt in range(1, abuse_max_retries + 1):
-                    logger.info(f"[{job_id}] Abuse detected, silent retry {abuse_attempt}/{abuse_max_retries}...")
-                    update_job(job_id, "connecting", eta=60 + abuse_attempt * 30,
-                               message="Processando... aguarde um momento.")
-                    
-                    # Close current browser
-                    if browser:
-                        browser.close()
-                        browser = None
-                    
-                    # Try solving CAPTCHA
-                    captcha_solved = solve_abuse_with_uc(email_addr, job_id)
-                    
-                    # Re-login regardless
-                    browser, context, page = launch_browser()
-                    ok = fast_login(page, email_addr, job_id)
-                    if not ok:
-                        logger.warning(f"[{job_id}] Re-login failed after abuse attempt {abuse_attempt}")
-                        if abuse_attempt < abuse_max_retries:
-                            if browser:
-                                browser.close()
-                                browser = None
-                            time.sleep(5)
-                            continue
-                        else:
+                update_job(job_id, "connecting", eta=90,
+                           message="Processando verificação... aguarde um momento.")
+                
+                # Step 1: Try Playwright solver directly on current page
+                logger.info(f"[{job_id}] Abuse detected, trying Playwright CAPTCHA solver...")
+                try:
+                    from captcha_solver import solve_captcha_playwright
+                    if solve_captcha_playwright(page, max_attempts=3):
+                        logger.info(f"[{job_id}] ✓ Playwright CAPTCHA solved!")
+                        state = handle_post_login(page, job_id)
+                        if state != "abuse":
+                            logger.info(f"[{job_id}] Abuse resolved via Playwright! state={state}")
+                        # If still abuse, fall through to UC
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Playwright solver error: {e}")
+                
+                # Step 2: If still abuse, use UC (separate browser)
+                if state == "abuse":
+                    abuse_max_retries = 2
+                    for abuse_attempt in range(1, abuse_max_retries + 1):
+                        logger.info(f"[{job_id}] Trying UC solver, attempt {abuse_attempt}/{abuse_max_retries}...")
+                        update_job(job_id, "connecting", eta=60 + abuse_attempt * 40,
+                                   message="Processando verificação... aguarde um momento.")
+                        
+                        # Close current browser
+                        if browser:
+                            browser.close()
+                            browser = None
+                        
+                        # Try solving CAPTCHA with UC
+                        captcha_solved = solve_abuse_with_uc(email_addr, job_id)
+                        
+                        # Re-login with Playwright
+                        browser, context, page = launch_browser()
+                        ok = fast_login(page, email_addr, job_id)
+                        if not ok:
+                            logger.warning(f"[{job_id}] Re-login failed after abuse attempt {abuse_attempt}")
+                            if abuse_attempt < abuse_max_retries:
+                                if browser:
+                                    browser.close()
+                                    browser = None
+                                time.sleep(5)
+                                continue
+                            else:
+                                update_job(job_id, "error",
+                                    message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
+                                return
+                        
+                        state = handle_post_login(page, job_id)
+                        logger.info(f"[{job_id}] After UC attempt {abuse_attempt}: state={state}")
+                        
+                        if state != "abuse":
+                            break  # Success!
+                        
+                        if abuse_attempt == abuse_max_retries:
                             update_job(job_id, "error",
                                 message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
                             return
-                    
-                    state = handle_post_login(page, job_id)
-                    logger.info(f"[{job_id}] After abuse retry {abuse_attempt}: state={state}")
-                    
-                    if state != "abuse":
-                        break  # Success! Continue normally
-                    
-                    if abuse_attempt == abuse_max_retries:
-                        update_job(job_id, "error",
-                            message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
-                        return
-                    
-                    # Wait before next retry
-                    time.sleep(5)
+                        
+                        time.sleep(5)
             
             if state == "verification":
                 update_job(job_id, "connecting", eta=50,
