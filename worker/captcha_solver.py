@@ -939,14 +939,19 @@ def _find_accessibility_button(page, frame_locator, iframe_handle, job_id):
             # O ícone de acessibilidade fica à ESQUERDA da barra, na mesma região Y
             # Tentar múltiplas posições porque o offset pode variar
             # px_box é a barra "Pressione e segure", o ícone fica antes dela
+            # Baseado em screenshot real: ícone fica à ESQUERDA do px-captcha box
+            # px-captcha box começa em x=780, ícone está em x≈844 (dentro/esquerda da barra)
+            # O ícone fica em px_box['x'] + ~64px, mesmo Y do centro da barra
             offsets = [
-                (-45, 0),    # 45px à esquerda, mesmo Y
-                (-55, 0),    # 55px à esquerda
-                (-35, 0),    # 35px à esquerda
-                (-45, -5),   # Um pouco acima
-                (-45, 5),    # Um pouco abaixo
-                (-60, 0),    # Mais à esquerda
-                (-25, 0),    # Mais perto
+                (64, 10),    # Posição real vista no screenshot
+                (60, 10),
+                (68, 10),
+                (64, 5),
+                (64, 15),
+                (55, 10),
+                (75, 10),
+                (50, 10),
+                (80, 10),
             ]
             
             icon_center_y = px_box['y'] + px_box['height'] / 2
