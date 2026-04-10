@@ -1360,6 +1360,292 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         return False
 
 
+def solve_press_and_hold(page, job_id: str, max_attempts: int = 5) -> bool:
+    """
+    Resolve o CAPTCHA PerimeterX 'Press & Hold' diretamente no Playwright.
+    Portado do DARKSAGE — mesma lógica que funciona no criador de hotmail:
+    1. Encontra o iframe do CAPTCHA
+    2. Entra no iframe, pega coordenadas do #px-captcha
+    3. Click-and-hold por 14-20s com micro-movimentos
+    4. Verifica se resolveu (URL muda)
+    """
+    logger.info(f"[{job_id}] CAPTCHA solver: iniciando press-and-hold (max {max_attempts} tentativas)...")
+    
+    # Passo 0: Clicar "Next/Próximo" na intro page de abuse (se presente)
+    try:
+        url = page.url.lower()
+        if "abuse" in url:
+            logger.info(f"[{job_id}] Na página de abuse intro, procurando botão Next...")
+            for sel in ["#idSIButton9", "#iNext", "#idBtn_Continue"]:
+                try:
+                    btn = page.locator(sel)
+                    if btn.is_visible(timeout=2000):
+                        btn.click(timeout=5000)
+                        logger.info(f"[{job_id}] Clicou '{sel}' na intro de abuse")
+                        time.sleep(random.uniform(4, 7))
+                        break
+                except:
+                    continue
+            else:
+                # Tentar por texto
+                for text in ["Next", "Próximo", "Avançar", "Continue", "Continuar", "Verify", "Verificar"]:
+                    try:
+                        btn = page.get_by_role("button", name=text)
+                        if btn.is_visible(timeout=1000):
+                            btn.click(timeout=5000)
+                            logger.info(f"[{job_id}] Clicou botão '{text}' na intro de abuse")
+                            time.sleep(random.uniform(4, 7))
+                            break
+                    except:
+                        continue
+    except Exception as e:
+        logger.warning(f"[{job_id}] Erro ao clicar Next na intro: {e}")
+    
+    def _check_solved():
+        """Verifica se saiu da página de abuse."""
+        try:
+            url = page.url.lower()
+            if "abuse" not in url:
+                return True
+        except:
+            pass
+        # Verificar se iframes de captcha sumiram
+        try:
+            still = page.evaluate("""() => {
+                var iframes = document.querySelectorAll('iframe');
+                for (var i = 0; i < iframes.length; i++) {
+                    var src = (iframes[i].src || '').toLowerCase();
+                    if (src.includes('hsprotect') || src.includes('enforcement') || 
+                        src.includes('captcha') || src.includes('perimeterx') || src.includes('px-cdn')) {
+                        var rect = iframes[i].getBoundingClientRect();
+                        if (rect.width > 50 && rect.height > 30) return true;
+                    }
+                }
+                return false;
+            }""")
+            if not still and "abuse" not in page.url.lower():
+                return True
+        except:
+            pass
+        return False
+    
+    for attempt in range(1, max_attempts + 1):
+        logger.info(f"[{job_id}] CAPTCHA tentativa {attempt}/{max_attempts}")
+        
+        try:
+            time.sleep(1)
+            if _check_solved():
+                logger.info(f"[{job_id}] CAPTCHA já resolvido!")
+                return True
+            
+            # Encontrar o iframe do CAPTCHA
+            captcha_iframe = None
+            iframe_info = page.evaluate("""() => {
+                var iframes = document.querySelectorAll('iframe');
+                var results = [];
+                for (var i = 0; i < iframes.length; i++) {
+                    var src = (iframes[i].src || '').toLowerCase();
+                    var rect = iframes[i].getBoundingClientRect();
+                    results.push({
+                        index: i, src: src.substring(0, 200),
+                        x: rect.x, y: rect.y, w: rect.width, h: rect.height
+                    });
+                }
+                return results;
+            }""")
+            
+            logger.info(f"[{job_id}] Iframes encontrados: {len(iframe_info)}")
+            
+            captcha_idx = None
+            captcha_rect = None
+            known_srcs = ['hsprotect', 'enforcement', 'captcha', 'perimeterx', 'px-cdn']
+            for info in iframe_info:
+                logger.info(f"[{job_id}]   iframe[{info['index']}]: src={info['src'][:80]}, size={info['w']:.0f}x{info['h']:.0f}")
+                if any(k in info['src'] for k in known_srcs) and info['w'] > 50:
+                    captcha_idx = info['index']
+                    captcha_rect = info
+                    break
+            
+            if captcha_idx is None:
+                # Tentar achar #px-captcha diretamente na página
+                try:
+                    px_box = page.evaluate("""() => {
+                        var el = document.getElementById('px-captcha');
+                        if (!el) return null;
+                        var r = el.getBoundingClientRect();
+                        return {x: r.x, y: r.y, w: r.width, h: r.height};
+                    }""")
+                    if px_box and px_box['w'] > 10:
+                        logger.info(f"[{job_id}] #px-captcha inline encontrado: {px_box}")
+                        # Click-and-hold direto no elemento inline
+                        cx = px_box['x'] + px_box['w'] / 2
+                        cy = px_box['y'] + px_box['h'] / 2
+                        
+                        hold_dur = random.uniform(14, 20) if attempt <= 3 else random.uniform(18, 24)
+                        logger.info(f"[{job_id}] Hold inline ({cx:.0f}, {cy:.0f}) por {hold_dur:.0f}s...")
+                        
+                        page.mouse.move(cx, cy)
+                        time.sleep(random.uniform(0.2, 0.5))
+                        page.mouse.down()
+                        
+                        start = time.time()
+                        solved = False
+                        while time.time() - start < hold_dur:
+                            time.sleep(random.uniform(0.4, 0.9))
+                            dx = random.choice([-2, -1, 0, 1, 2])
+                            dy = random.choice([-1, 0, 1])
+                            try:
+                                page.mouse.move(cx + dx, cy + dy)
+                            except:
+                                pass
+                            if _check_solved():
+                                solved = True
+                                break
+                        
+                        try:
+                            page.mouse.up()
+                        except:
+                            pass
+                        
+                        elapsed = time.time() - start
+                        logger.info(f"[{job_id}] Solto após {elapsed:.1f}s, solved={solved}")
+                        
+                        if solved:
+                            return True
+                        time.sleep(4)
+                        if _check_solved():
+                            return True
+                        time.sleep(random.uniform(2, 4))
+                        continue
+                except:
+                    pass
+                
+                logger.info(f"[{job_id}] Nenhum iframe/px-captcha encontrado, aguardando...")
+                time.sleep(5)
+                if _check_solved():
+                    return True
+                continue
+            
+            # Scroll iframe pra view
+            page.evaluate(f"""() => {{
+                var iframes = document.querySelectorAll('iframe');
+                if (iframes[{captcha_idx}]) {{
+                    iframes[{captcha_idx}].scrollIntoView({{block: 'center'}});
+                }}
+            }}""")
+            time.sleep(0.5)
+            
+            # Pegar rect atualizado do iframe
+            iframe_rect = page.evaluate(f"""() => {{
+                var iframes = document.querySelectorAll('iframe');
+                var el = iframes[{captcha_idx}];
+                if (!el) return null;
+                var r = el.getBoundingClientRect();
+                return {{x: r.x, y: r.y, w: r.width, h: r.height}};
+            }}""")
+            
+            if not iframe_rect:
+                logger.warning(f"[{job_id}] Iframe sumiu após scroll")
+                continue
+            
+            logger.info(f"[{job_id}] iframe rect: x={iframe_rect['x']:.0f} y={iframe_rect['y']:.0f} w={iframe_rect['w']:.0f} h={iframe_rect['h']:.0f}")
+            
+            # Entrar no iframe pra pegar coordenadas do #px-captcha
+            btn_rect = None
+            for frame in page.frames:
+                frame_url = frame.url.lower()
+                if any(k in frame_url for k in known_srcs):
+                    try:
+                        btn_rect = frame.evaluate("""() => {
+                            var el = document.getElementById('px-captcha');
+                            if (!el) return null;
+                            var r = el.getBoundingClientRect();
+                            return {x: r.x, y: r.y, w: r.width, h: r.height};
+                        }""")
+                        if btn_rect:
+                            logger.info(f"[{job_id}] #px-captcha rect dentro do iframe: x={btn_rect['x']:.0f} y={btn_rect['y']:.0f} w={btn_rect['w']:.0f} h={btn_rect['h']:.0f}")
+                    except Exception as e:
+                        logger.warning(f"[{job_id}] Erro ao ler px-captcha do frame: {e}")
+                    break
+            
+            # Calcular coordenadas absolutas do clique
+            if btn_rect and btn_rect['w'] > 10:
+                # Coordenadas relativas ao iframe + posição do iframe na página
+                click_x = iframe_rect['x'] + btn_rect['x'] + btn_rect['w'] / 2
+                click_y = iframe_rect['y'] + btn_rect['y'] + btn_rect['h'] / 2
+            else:
+                # Fallback: centro do iframe
+                click_x = iframe_rect['x'] + iframe_rect['w'] / 2
+                click_y = iframe_rect['y'] + iframe_rect['h'] / 2
+            
+            # Duração variável do hold (como o DARKSAGE)
+            hold_dur = random.uniform(14, 20) if attempt <= 3 else random.uniform(18, 24)
+            
+            logger.info(f"[{job_id}] Press-and-hold em ({click_x:.0f}, {click_y:.0f}) por {hold_dur:.0f}s...")
+            
+            # === O CORE: click_and_hold com micro-movimentos ===
+            # Move pro ponto primeiro
+            page.mouse.move(click_x, click_y)
+            time.sleep(random.uniform(0.2, 0.5))
+            
+            # Mouse down (segura)
+            page.mouse.down()
+            
+            start = time.time()
+            solved = False
+            while time.time() - start < hold_dur:
+                time.sleep(random.uniform(0.4, 0.9))
+                # Micro-movimento (simula tremor da mão humana, como o DARKSAGE faz)
+                dx = random.choice([-2, -1, 0, 1, 2])
+                dy = random.choice([-1, 0, 1])
+                try:
+                    page.mouse.move(click_x + dx, click_y + dy)
+                except:
+                    pass
+                # Checar se resolveu durante o hold
+                if _check_solved():
+                    solved = True
+                    break
+            
+            # Soltar
+            try:
+                page.mouse.up()
+            except:
+                pass
+            
+            elapsed = time.time() - start
+            logger.info(f"[{job_id}] Solto após {elapsed:.1f}s, solved_during_hold={solved}")
+            
+            if solved:
+                logger.info(f"[{job_id}] ✓ CAPTCHA resolvido durante o hold!")
+                return True
+            
+            # Esperar um pouco pra página processar
+            time.sleep(4)
+            if _check_solved():
+                logger.info(f"[{job_id}] ✓ CAPTCHA resolvido após release!")
+                return True
+            
+            # Esperar mais (pode demorar pra redirect)
+            for wait_i in range(6):
+                time.sleep(5)
+                if _check_solved():
+                    logger.info(f"[{job_id}] ✓ CAPTCHA resolvido após {(wait_i+1)*5}s!")
+                    return True
+            
+            # Não resolveu, pausa antes de tentar de novo
+            time.sleep(random.uniform(2, 5))
+        
+        except Exception as e:
+            logger.error(f"[{job_id}] CAPTCHA solver erro: {str(e)[:200]}")
+            time.sleep(3)
+            if _check_solved():
+                return True
+    
+    logger.warning(f"[{job_id}] CAPTCHA falhou após {max_attempts} tentativas")
+    return False
+
+
 def solve_abuse_with_uc(email_addr: str, job_id: str, page=None) -> bool:
     """Solve abuse/CAPTCHA. Tries Playwright first (if page given), then UC."""
     # Step 1: Try Playwright solver (faster, no extra browser)
@@ -3054,10 +3340,30 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Post-login state: {state}")
             
             if state == "abuse":
-                logger.info(f"[{job_id}] Abuse detectado — conta bloqueada pela Microsoft.")
-                update_job(job_id, "error",
-                    message="⚠️ CAPTCHA detectado nesta conta. Entre em contato com o suporte para atendimento manual.")
-                return
+                logger.info(f"[{job_id}] Abuse detectado, tentando resolver CAPTCHA press-and-hold...")
+                update_job(job_id, "connecting", eta=90,
+                    message="Resolvendo verificação de segurança... aguarde.")
+                
+                solved = solve_press_and_hold(page, job_id)
+                
+                if solved:
+                    state = handle_post_login(page, job_id)
+                    logger.info(f"[{job_id}] Estado após CAPTCHA solver: {state}")
+                    if state == "abuse":
+                        # Tentar mais uma vez
+                        logger.info(f"[{job_id}] Ainda abuse, tentativa 2...")
+                        update_job(job_id, "connecting", eta=60,
+                            message="Verificação adicional... aguarde.")
+                        solved2 = solve_press_and_hold(page, job_id)
+                        if solved2:
+                            state = handle_post_login(page, job_id)
+                            logger.info(f"[{job_id}] Estado após tentativa 2: {state}")
+                
+                if state == "abuse":
+                    logger.info(f"[{job_id}] CAPTCHA não resolvido após tentativas.")
+                    update_job(job_id, "error",
+                        message="⚠️ CAPTCHA detectado nesta conta. Entre em contato com o suporte para atendimento manual.")
+                    return
             
             if state == "verification":
                 update_job(job_id, "connecting", eta=50,
