@@ -104,10 +104,21 @@ def _digitar_lento(element, texto):
 
 
 def _checar_captcha_resolvido(driver):
-    """Checa se saiu da página de abuse."""
+    """Checa se o CAPTCHA foi resolvido (conta desbloqueada)."""
     try:
         url = driver.current_url.lower()
         if "abuse" not in url:
+            return True
+    except:
+        pass
+    # Checar texto da página — "desbloqueada" / "unlocked" aparece quando resolveu
+    try:
+        body = driver.find_element(By.TAG_NAME, "body").text.lower()
+        if any(t in body for t in [
+            "desbloqueada", "unlocked", "has been unlocked",
+            "conta foi desbloqueada", "account has been unlocked",
+            "continuar", "continue", "atividade recente", "recent activity"
+        ]):
             return True
     except:
         pass

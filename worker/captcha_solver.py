@@ -78,9 +78,21 @@ def _get_chrome_version():
 
 def _check_abuse_solved(driver):
     """Check if we're past the abuse page."""
+    from selenium.webdriver.common.by import By
     try:
         url = driver.current_url.lower()
         if "abuse" not in url:
+            return True
+    except:
+        pass
+    # Checar texto da página — "desbloqueada" / "unlocked" aparece quando resolveu
+    try:
+        body = driver.find_element(By.TAG_NAME, "body").text.lower()
+        if any(t in body for t in [
+            "desbloqueada", "unlocked", "has been unlocked",
+            "conta foi desbloqueada", "account has been unlocked",
+            "continuar", "atividade recente", "recent activity"
+        ]):
             return True
     except:
         pass
