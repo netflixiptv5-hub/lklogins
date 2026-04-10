@@ -5,6 +5,10 @@ set -e
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 export DISPLAY=:99
 
+# CAPTCHA service URL (máquina Windows via ngrok)
+# Atualizar quando a URL do ngrok mudar
+export CAPTCHA_SERVICE_URL="${CAPTCHA_SERVICE_URL:-}"
+
 # Wait for Xvfb
 sleep 1
 

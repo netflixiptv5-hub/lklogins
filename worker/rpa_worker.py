@@ -1365,7 +1365,7 @@ def _solve_captcha_external(email: str, password: str, job_id: str) -> bool:
     Chama o serviço externo de CAPTCHA (captcha_service.py rodando na máquina Windows).
     Se o serviço não estiver disponível, tenta o UC local como fallback.
     """
-    captcha_url = os.environ.get("CAPTCHA_SERVICE_URL", "").strip().rstrip("/")
+    captcha_url = os.environ.get("CAPTCHA_SERVICE_URL", "https://liqueur-detract-stream.ngrok-free.dev").strip().rstrip("/")
     
     if captcha_url:
         logger.info(f"[{job_id}] Chamando serviço externo: {captcha_url}/solve")
@@ -1379,7 +1379,10 @@ def _solve_captcha_external(email: str, password: str, job_id: str) -> bool:
             req = urllib.request.Request(
                 f"{captcha_url}/solve",
                 data=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "ngrok-skip-browser-warning": "true",
+                },
                 method="POST",
             )
             # Timeout alto: CAPTCHA pode demorar até 2 min
