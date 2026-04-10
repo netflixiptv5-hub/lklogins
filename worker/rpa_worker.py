@@ -2907,14 +2907,32 @@ def process_job(job_id: str, email_addr: str, service: str):
             try:
                 context.add_cookies(cached_cookies)
                 page.goto("https://outlook.live.com/mail/0/", timeout=30000, wait_until="domcontentloaded")
-                time.sleep(8)
+                # Espera inbox OU redirecionamento de login (máx 10s)
+                try:
+                    page.wait_for_selector(
+                        "[role='option'], button[aria-label*='New mail'], button[aria-label*='Nova'], "
+                        "[role='searchbox'], input[aria-label*='earch'], "
+                        "input[type='email'], input[name='loginfmt']",
+                        timeout=10000
+                    )
+                except:
+                    pass
+                time.sleep(1)
                 
                 url_after = page.url.lower()
                 # Se /mail/0/ falhou, tenta /mail/
                 if "outlook.live.com/mail" not in url_after:
                     logger.info(f"[{job_id}] Cookie cache: /mail/0/ falhou ({url_after}), tentando /mail/...")
                     page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
-                    time.sleep(6)
+                    try:
+                        page.wait_for_selector(
+                            "[role='option'], button[aria-label*='New mail'], button[aria-label*='Nova'], "
+                            "input[type='email'], input[name='loginfmt']",
+                            timeout=8000
+                        )
+                    except:
+                        pass
+                    time.sleep(1)
                     url_after = page.url.lower()
                 
                 # Se redirecionou pra login/identity/microsoft365 = cookies expirados
@@ -2951,6 +2969,12 @@ def process_job(job_id: str, email_addr: str, service: str):
                             try:
                                 fresh_cookies = context.cookies()
                                 save_cookies(email_addr, fresh_cookies)
+                                # Tenta extrair token pra próxima ser via IMAP (1s)
+                                try:
+                                    from api_login import extract_token_from_playwright_cookies
+                                    extract_token_from_playwright_cookies(fresh_cookies, email_addr, job_id)
+                                except:
+                                    pass
                             except:
                                 pass
                             update_job(job_id, "found",
@@ -2962,6 +2986,11 @@ def process_job(job_id: str, email_addr: str, service: str):
                             try:
                                 fresh_cookies = context.cookies()
                                 save_cookies(email_addr, fresh_cookies)
+                                try:
+                                    from api_login import extract_token_from_playwright_cookies
+                                    extract_token_from_playwright_cookies(fresh_cookies, email_addr, job_id)
+                                except:
+                                    pass
                             except:
                                 pass
                             update_job(job_id, "not_found",
@@ -3145,6 +3174,12 @@ def process_job(job_id: str, email_addr: str, service: str):
                 login_cookies = context.cookies()
                 save_cookies(email_addr, login_cookies)
                 logger.info(f"[{job_id}] Cookies salvos após login ({len(login_cookies)} cookies)")
+                # Tenta extrair token OAuth dos cookies pra acelerar próximas chamadas via IMAP
+                try:
+                    from api_login import extract_token_from_playwright_cookies
+                    extract_token_from_playwright_cookies(login_cookies, email_addr, job_id)
+                except Exception as te:
+                    logger.debug(f"[{job_id}] extract_token skip: {te}")
             except Exception as ce:
                 logger.warning(f"[{job_id}] Falha ao salvar cookies: {ce}")
             

@@ -375,6 +375,140 @@ def _try_login(email: str, password: str, job_id: str) -> dict | None:
         pass  # Keep client alive if successful
 
 
+def extract_token_from_playwright_cookies(playwright_cookies: list, email: str, job_id: str = "") -> bool:
+    """
+    Usa cookies do Playwright (após login browser) para trocar por access_token + refresh_token
+    via OAuth sem precisar do browser. Salva no token_cache para próximas chamadas via IMAP (~1s).
+    Retorna True se conseguiu salvar o token.
+    """
+    try:
+        # Converte lista de cookies Playwright → dict por name
+        cookies_dict = {c["name"]: c["value"] for c in playwright_cookies if c.get("name")}
+        
+        # Precisa do ESTSAUTHPERSISTENT ou MSPAuth para fazer o OAuth exchange
+        msp_auth = cookies_dict.get("MSPAuth", "") or cookies_dict.get("MSPAuthPH", "")
+        estsauth = cookies_dict.get("ESTSAUTHPERSISTENT", "") or cookies_dict.get("ESTSAUTH", "")
+        cid_raw = cookies_dict.get("MSPCID", "").upper()
+        
+        if not (msp_auth or estsauth):
+            logger.info(f"[{job_id}] extract_token: sem MSPAuth/ESTSAUTH nos cookies, pulando")
+            return False
+        
+        # Monta httpx client com os cookies do browser
+        cookie_jar = {}
+        for c in playwright_cookies:
+            name = c.get("name", "")
+            value = c.get("value", "")
+            if name and value:
+                cookie_jar[name] = value
+        
+        with httpx.Client(
+            follow_redirects=False,
+            timeout=15,
+            headers={
+                "User-Agent": USER_AGENT_AUTH,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            cookies=cookie_jar,
+        ) as client:
+            # Passo 1: autorização OAuth usando sessão existente
+            r1 = client.get(
+                f"https://login.live.com/oauth20_authorize.srf?"
+                f"client_id={CLIENT_ID}"
+                f"&redirect_uri={urllib.parse.quote(REDIRECT_URI, safe='')}"
+                f"&response_type=code"
+                f"&scope={urllib.parse.quote(SCOPE)}"
+                f"&mkt=EN-US",
+                headers={
+                    "User-Agent": USER_AGENT_AUTH,
+                    "X-Requested-With": "com.microsoft.outlooklite",
+                    "Sec-Fetch-Site": "same-site",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Accept": "text/html,application/xhtml+xml",
+                }
+            )
+            
+            loc1 = r1.headers.get("location", "")
+            body1 = _decompress(r1)
+            
+            # Pode redirecionar direto com código
+            code = None
+            code_match = re.search(r"code=([^&\s\"']+)", loc1)
+            if code_match:
+                code = code_match.group(1)
+            
+            if not code:
+                # Tenta extrair do corpo (redirect via JS ou form)
+                code_match = re.search(r'"code"\s*:\s*"([^"]+)"', body1)
+                if code_match:
+                    code = code_match.group(1)
+            
+            if not code:
+                # Segue redirect se necessário
+                if loc1 and loc1.startswith("http"):
+                    r2 = client.get(loc1, headers={"User-Agent": USER_AGENT_AUTH})
+                    loc2 = r2.headers.get("location", "")
+                    code_match = re.search(r"code=([^&\s]+)", loc2)
+                    if code_match:
+                        code = code_match.group(1)
+            
+            if not code:
+                logger.info(f"[{job_id}] extract_token: não conseguiu authorization code (loc={loc1[:80]})")
+                return False
+            
+            logger.info(f"[{job_id}] extract_token: got auth code, trocando por token...")
+            
+            # Passo 2: troca código por access_token + refresh_token
+            code_clean = urllib.parse.unquote(code)
+            token_data = (
+                f"client_info=1&client_id={CLIENT_ID}"
+                f"&redirect_uri={urllib.parse.quote(REDIRECT_URI, safe='')}"
+                f"&grant_type=authorization_code"
+                f"&code={urllib.parse.quote(code_clean, safe='')}"
+                f"&scope={urllib.parse.quote(SCOPE)}"
+            )
+            
+            r_token = client.post(
+                "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+                content=token_data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                    "User-Agent": "Mozilla/5.0 (compatible; MSAL 1.0)",
+                    "x-client-Ver": "1.0.0+635e350c",
+                    "x-client-OS": "28",
+                    "x-client-SKU": "MSAL.xplat.android",
+                },
+            )
+            
+            token_body = r_token.json()
+            access_token = token_body.get("access_token")
+            refresh_token = token_body.get("refresh_token", "")
+            
+            if not access_token:
+                logger.info(f"[{job_id}] extract_token: sem access_token na resposta: {str(token_body)[:100]}")
+                return False
+            
+            # CID do cookie ou do token
+            if not cid_raw:
+                import base64, json as _json
+                try:
+                    payload = access_token.split(".")[1]
+                    payload += "=" * (4 - len(payload) % 4)
+                    decoded = _json.loads(base64.b64decode(payload))
+                    cid_raw = decoded.get("puid", decoded.get("oid", "")).upper()
+                except:
+                    pass
+            
+            from token_cache import save_tokens
+            save_tokens(email, access_token, refresh_token, cid_raw)
+            logger.info(f"[{job_id}] extract_token: token salvo no cache para {email} (CID={cid_raw})")
+            return True
+    
+    except Exception as e:
+        logger.warning(f"[{job_id}] extract_token erro: {e}")
+        return False
+
+
 def api_search_emails(access_token: str, cid: str, keyword: str, job_id: str = "") -> list:
     """
     Search emails via Outlook REST API.
