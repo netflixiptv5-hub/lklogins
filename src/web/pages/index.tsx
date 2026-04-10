@@ -744,23 +744,29 @@ export default function Index() {
       )}
 
       {/* CAPTCHA interativo — cliente resolve na tela */}
-      {jobStatus === "captcha_waiting" && captchaImg && (
-        <div style={{position:"fixed",top:0,left:0,width:"100%",height:"100%",background:"rgba(0,0,0,0.88)",zIndex:9999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"12px"}}>
-          <p style={{color:"white",fontSize:"17px",fontWeight:600,textAlign:"center",margin:0}}>
-            ⚠️ Resolução de CAPTCHA necessária
+      {jobStatus === "captcha_waiting" && (
+        <div style={{position:"fixed",top:0,left:0,width:"100%",height:"100%",background:"rgba(0,0,0,0.95)",zIndex:9999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"16px",padding:"20px",boxSizing:"border-box"}}>
+          <p style={{color:"#E50914",fontSize:"28px",fontWeight:800,textAlign:"center",margin:0,lineHeight:1.2}}>
+            RESOLVA O CAPTCHA PARA CONTINUAR
           </p>
-          <p style={{color:"#ccc",fontSize:"14px",textAlign:"center",margin:0}}>
-            Clique no ícone de acessibilidade (boneco azul) na imagem abaixo
+          <p style={{color:"#fff",fontSize:"16px",textAlign:"center",margin:0}}>
+            Será pedido apenas <strong>1 vez</strong> — clique no ícone de acessibilidade (boneco azul) na imagem
           </p>
-          <img
-            ref={captchaImgRef as any}
-            src={captchaImg}
-            onClick={handleCaptchaClick}
-            style={{maxWidth:"90vw",maxHeight:"72vh",cursor:"crosshair",border:"2px solid #E50914",borderRadius:"6px"}}
-            alt="CAPTCHA screenshot"
-          />
+          {captchaImg ? (
+            <img
+              ref={captchaImgRef as any}
+              src={captchaImg}
+              onClick={handleCaptchaClick}
+              style={{maxWidth:"90vw",maxHeight:"65vh",cursor:"crosshair",border:"3px solid #E50914",borderRadius:"8px"}}
+              alt="CAPTCHA screenshot"
+            />
+          ) : (
+            <div style={{color:"#aaa",fontSize:"15px",textAlign:"center",marginTop:"20px"}}>
+              Carregando tela... aguarde
+            </div>
+          )}
           <p style={{color:"#888",fontSize:"12px",textAlign:"center",margin:0}}>
-            Você tem 3 minutos para resolver. Clique diretamente sobre o ícone na imagem.
+            Você tem 3 minutos. Clique diretamente sobre o ícone na imagem.
           </p>
         </div>
       )}
