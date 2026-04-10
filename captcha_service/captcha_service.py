@@ -33,11 +33,20 @@ import traceback
 app = Flask(__name__)
 
 # Config
-MAX_WORKERS = 3
+MAX_WORKERS = 2
 SENHA_PADRAO = "02022013L"
+
+# Posições das janelas (2 janelas, metade da tela cada - 1920x1080)
+WINDOW_POSITIONS = [
+    (0, 0),      # Janela 1: metade esquerda
+    (960, 0),    # Janela 2: metade direita
+]
+WINDOW_WIDTH = 960
+WINDOW_HEIGHT = 1080
 
 # Controle de workers
 _workers_busy = 0
+_next_window = 0
 _workers_lock = threading.Lock()
 
 
@@ -46,11 +55,13 @@ def log(job_id, msg):
     print(f"[{ts}] [{job_id}] {msg}")
 
 
-def _create_driver():
+def _create_driver(window_index=0):
     """Cria Chrome UC — igual ao DARKSAGE."""
+    pos_x, pos_y = WINDOW_POSITIONS[window_index % len(WINDOW_POSITIONS)]
+    
     options = uc.ChromeOptions()
-    options.add_argument("--window-size=640,500")
-    options.add_argument("--window-position=0,0")
+    options.add_argument(f"--window-size={WINDOW_WIDTH},{WINDOW_HEIGHT}")
+    options.add_argument(f"--window-position={pos_x},{pos_y}")
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -89,10 +100,10 @@ def _create_driver():
 
     driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_ver)
 
-    # Forçar janela pequena (UC ignora o argumento às vezes)
+    # Forçar tamanho e posição (UC ignora o argumento às vezes)
     try:
-        driver.set_window_size(640, 500)
-        driver.set_window_position(0, 0)
+        driver.set_window_size(WINDOW_WIDTH, WINDOW_HEIGHT)
+        driver.set_window_position(pos_x, pos_y)
     except:
         pass
 
@@ -272,15 +283,15 @@ def _resolver_pressione_segure(driver, job_id, max_tentativas=5):
     return False
 
 
-def _solve_abuse(email, password, job_id):
+def _solve_abuse(email, password, job_id, window_index=0):
     """Fluxo completo: login → abuse page → Next → CAPTCHA → resolvido."""
     global _workers_busy
 
     driver = None
     user_data = None
     try:
-        log(job_id, f"Iniciando Chrome UC para {email}...")
-        driver, user_data = _create_driver()
+        log(job_id, f"Iniciando Chrome UC para {email} (janela {window_index + 1})...")
+        driver, user_data = _create_driver(window_index)
 
         # === LOGIN ===
         log(job_id, "Navegando pro login.live.com...")
@@ -430,10 +441,13 @@ def solve():
         if _workers_busy >= MAX_WORKERS:
             return jsonify({"solved": False, "message": f"Ocupado ({_workers_busy}/{MAX_WORKERS} workers)"}), 503
         _workers_busy += 1
+        global _next_window
+        win_idx = _next_window % MAX_WORKERS
+        _next_window += 1
 
-    log(job_id, f"=== NOVO JOB: {email} ===")
+    log(job_id, f"=== NOVO JOB: {email} (janela {win_idx + 1}/{MAX_WORKERS}) ===")
     
-    solved, message = _solve_abuse(email, password, job_id)
+    solved, message = _solve_abuse(email, password, job_id, window_index=win_idx)
     
     log(job_id, f"=== RESULTADO: solved={solved}, msg={message} ===")
     return jsonify({"solved": solved, "message": message})
