@@ -1365,40 +1365,39 @@ def _solve_captcha_external(email: str, password: str, job_id: str) -> bool:
     Chama o serviço externo de CAPTCHA (captcha_service.py rodando na máquina Windows).
     Se o serviço não estiver disponível, tenta o UC local como fallback.
     """
-    captcha_url = os.environ.get("CAPTCHA_SERVICE_URL", "https://liqueur-detract-stream.ngrok-free.dev").strip().rstrip("/")
+    # URL hardcoded + env override
+    CAPTCHA_NGROK = "https://liqueur-detract-stream.ngrok-free.dev"
+    captcha_url = os.environ.get("CAPTCHA_SERVICE_URL", "").strip().rstrip("/") or CAPTCHA_NGROK
     
-    if captcha_url:
-        logger.info(f"[{job_id}] Chamando serviço externo: {captcha_url}/solve")
-        try:
-            import json
-            payload = json.dumps({
-                "email": email,
-                "password": password,
-                "job_id": job_id,
-            }).encode()
-            req = urllib.request.Request(
-                f"{captcha_url}/solve",
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "ngrok-skip-browser-warning": "true",
-                },
-                method="POST",
-            )
-            # Timeout alto: CAPTCHA pode demorar até 2 min
-            resp = urllib.request.urlopen(req, timeout=180)
-            result = json.loads(resp.read().decode())
-            solved = result.get("solved", False)
-            msg = result.get("message", "")
-            logger.info(f"[{job_id}] Serviço externo: solved={solved}, msg={msg}")
-            return solved
-        except Exception as e:
-            logger.error(f"[{job_id}] Serviço externo falhou: {e}")
-            logger.info(f"[{job_id}] Tentando UC local como fallback...")
-    else:
-        logger.info(f"[{job_id}] CAPTCHA_SERVICE_URL não configurada, usando UC local...")
+    logger.info(f"[{job_id}] Chamando serviço externo: {captcha_url}/solve")
+    try:
+        import json as _json
+        payload = _json.dumps({
+            "email": email,
+            "password": password,
+            "job_id": job_id,
+        }).encode()
+        req = urllib.request.Request(
+            f"{captcha_url}/solve",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "ngrok-skip-browser-warning": "true",
+            },
+            method="POST",
+        )
+        # Timeout alto: CAPTCHA pode demorar até 3 min
+        resp = urllib.request.urlopen(req, timeout=200)
+        result = _json.loads(resp.read().decode())
+        solved = result.get("solved", False)
+        msg = result.get("message", "")
+        logger.info(f"[{job_id}] Serviço externo: solved={solved}, msg={msg}")
+        return solved
+    except Exception as e:
+        logger.error(f"[{job_id}] Serviço externo falhou: {e}")
+        logger.info(f"[{job_id}] Tentando UC local como fallback...")
 
-    # Fallback: UC local (pode não funcionar no Railway, mas tenta)
+    # Fallback: UC local
     try:
         from captcha_solver import solve_captcha_with_uc
         return solve_captcha_with_uc(email, password, max_attempts=5, job_id=job_id)
