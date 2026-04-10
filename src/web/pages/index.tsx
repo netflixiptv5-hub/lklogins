@@ -248,15 +248,26 @@ export default function Index() {
         } else if (s === "captcha_waiting") {
           // Iniciar stream de screenshot
           if (!captchaPollRef.current) {
+            let _failCount = 0;
             captchaPollRef.current = setInterval(async () => {
               try {
                 const imgRes = await fetch(`/api/captcha-live/${id}?t=${Date.now()}`);
                 if (imgRes.ok) {
+                  _failCount = 0;
                   const blob = await imgRes.blob();
                   const url = URL.createObjectURL(blob);
                   if (captchaImgRef.current) URL.revokeObjectURL(captchaImgRef.current);
                   captchaImgRef.current = url;
                   setCaptchaImg(url);
+                } else {
+                  _failCount++;
+                  // Após 5 falhas consecutivas (4s), o job provavelmente expirou
+                  if (_failCount >= 5) {
+                    clearInterval(captchaPollRef.current!);
+                    captchaPollRef.current = null;
+                    setJobStatus("error");
+                    setErrorMessage("Sessão expirada. Tente novamente.");
+                  }
                 }
               } catch { /* ignore */ }
             }, 800);

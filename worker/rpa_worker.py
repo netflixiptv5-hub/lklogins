@@ -3279,6 +3279,11 @@ class JobHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         self.wfile.write(json.dumps({"ok": False, "error": "page not ready"}).encode())
                 else:
+                    # Job não está no dict — pode ter reiniciado. Marca como erro.
+                    job = jobs.get(job_id)
+                    if job and job.get("status") == "captcha_waiting":
+                        update_job(job_id, "error", message="Sessão expirada. Tente novamente.")
+                        logger.warning(f"[captcha-live] job {job_id} orphan — marcado como erro")
                     self.send_response(404)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
