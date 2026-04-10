@@ -3255,22 +3255,36 @@ class JobHandler(BaseHTTPRequestHandler):
             try:
                 with _captcha_lock:
                     entry = _captcha_waiting.get(job_id)
-                if entry and entry.get("page"):
-                    page = entry["page"]
-                    import io
-                    png = page.screenshot(type="png", full_page=False)
-                    self.send_response(200)
-                    self.send_header("Content-Type", "image/png")
-                    self.send_header("Content-Length", str(len(png)))
-                    self.send_header("Cache-Control", "no-cache")
-                    self.end_headers()
-                    self.wfile.write(png)
+                if entry is not None:
+                    page = entry.get("page")
+                    if page is not None:
+                        try:
+                            png = page.screenshot(type="png", full_page=False)
+                            self.send_response(200)
+                            self.send_header("Content-Type", "image/png")
+                            self.send_header("Content-Length", str(len(png)))
+                            self.send_header("Cache-Control", "no-cache")
+                            self.end_headers()
+                            self.wfile.write(png)
+                        except Exception as ss:
+                            logger.error(f"[captcha-live] screenshot error for {job_id}: {ss}")
+                            self.send_response(500)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"ok": False, "error": f"screenshot: {ss}"}).encode())
+                    else:
+                        logger.warning(f"[captcha-live] entry exists but page=None for {job_id}")
+                        self.send_response(404)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"ok": False, "error": "page not ready"}).encode())
                 else:
                     self.send_response(404)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(json.dumps({"ok": False, "error": "Not waiting"}).encode())
             except Exception as e:
+                logger.error(f"[captcha-live] error for {job_id}: {e}")
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
