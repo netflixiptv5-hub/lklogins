@@ -70,7 +70,23 @@ def _create_driver():
     os.makedirs(user_data, exist_ok=True)
     options.add_argument(f"--user-data-dir={user_data}")
 
-    driver = uc.Chrome(options=options, use_subprocess=True)
+    # Detectar versão do Chrome instalado
+    chrome_ver = None
+    try:
+        import subprocess as _sp
+        # Windows
+        out = _sp.check_output(
+            r'reg query "HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon" /v version',
+            shell=True, stderr=_sp.DEVNULL
+        ).decode()
+        for part in out.strip().split():
+            if "." in part and part[0].isdigit():
+                chrome_ver = int(part.split(".")[0])
+                break
+    except:
+        pass
+
+    driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_ver)
 
     try:
         driver.execute_cdp_cmd("WebAuthn.enable", {"enableUI": False})
