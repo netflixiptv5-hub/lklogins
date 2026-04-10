@@ -3054,70 +3054,10 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Post-login state: {state}")
             
             if state == "abuse":
-                # CAPTCHA detectado — abre modal direto pro cliente resolver
-                logger.info(f"[{job_id}] Abuse detectado, abrindo modal CAPTCHA pro cliente...")
-                update_job(job_id, "captcha_waiting",
-                    message="⚠️ Verificação necessária. Complete o CAPTCHA na tela para continuar.")
-                
-                # Registrar page no dict de espera
-                evt = threading.Event()
-                with _captcha_lock:
-                    _captcha_waiting[job_id] = {"page": None, "event": evt, "click": None}
-                
-                # Tira screenshots periodicamente NA MESMA THREAD (Playwright não é thread-safe)
-                screenshot_path = f"/tmp/captcha_live_{job_id}.png"
-                stop_screenshots = threading.Event()
-                
-                def _screenshot_loop():
-                    while not stop_screenshots.is_set():
-                        try:
-                            png = page.screenshot(type="png", full_page=False)
-                            with open(screenshot_path, "wb") as f:
-                                f.write(png)
-                        except Exception as se:
-                            logger.debug(f"[{job_id}] screenshot loop: {se}")
-                            break
-                        stop_screenshots.wait(timeout=0.8)
-                
-                # Roda screenshot loop em thread separada — mas usamos file, não o page object
-                ss_thread = threading.Thread(target=_screenshot_loop, daemon=True)
-                ss_thread.start()
-                
-                # Aguardar até 3 minutos pelo clique do cliente
-                solved = evt.wait(timeout=180)
-                stop_screenshots.set()
-                
-                with _captcha_lock:
-                    entry = _captcha_waiting.pop(job_id, {})
-                
-                if not solved:
-                    update_job(job_id, "error",
-                        message="⚠️ Tempo esgotado para resolver o CAPTCHA.")
-                    return
-                
-                # Clique recebido — fazer CDP click nas coordenadas
-                click = entry.get("click")
-                if click:
-                    cx, cy = click
-                    logger.info(f"[{job_id}] Cliente clicou em ({cx}, {cy})")
-                    try:
-                        cdp = page.context.new_cdp_session(page)
-                        cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": cx, "y": cy, "buttons": 0})
-                        time.sleep(0.3)
-                        cdp.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 1})
-                        time.sleep(0.15)
-                        cdp.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 0})
-                    except Exception as ce:
-                        logger.warning(f"[{job_id}] CDP click error: {ce}")
-                        page.mouse.click(cx, cy)
-                    time.sleep(3)
-                
-                state = handle_post_login(page, job_id)
-                logger.info(f"[{job_id}] Estado após clique do cliente: {state}")
-                if state == "abuse":
-                    update_job(job_id, "error",
-                        message="⚠️ CAPTCHA não resolvido. Tente novamente.")
-                    return
+                logger.info(f"[{job_id}] Abuse detectado — conta bloqueada pela Microsoft.")
+                update_job(job_id, "error",
+                    message="⚠️ CAPTCHA detectado nesta conta. Entre em contato com o suporte para atendimento manual.")
+                return
             
             if state == "verification":
                 update_job(job_id, "connecting", eta=50,

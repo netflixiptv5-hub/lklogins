@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
-type JobStatus = "idle" | "connecting" | "logged_in" | "searching" | "found" | "not_found" | "not_found_waiting" | "error" | "expired_waiting" | "captcha_waiting";
+type JobStatus = "idle" | "connecting" | "logged_in" | "searching" | "found" | "not_found" | "not_found_waiting" | "error" | "expired_waiting";
 
 interface StatusStep {
   label: string;
@@ -116,9 +116,7 @@ export default function Index() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [isExpired, setIsExpired] = useState(false);
   const [savedJobId, setSavedJobId] = useState<string | null>(null);
-  const [captchaImg, setCaptchaImg] = useState<string | null>(null);
-  const captchaImgRef = useRef<string | null>(null);
-  const captchaPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -245,39 +243,10 @@ export default function Index() {
           setJobStatus("not_found_waiting");
           if (pollRef.current) clearInterval(pollRef.current);
           if (timerRef.current) clearInterval(timerRef.current);
-        } else if (s === "captcha_waiting") {
-          // Iniciar stream de screenshot
-          if (!captchaPollRef.current) {
-            let _failCount = 0;
-            captchaPollRef.current = setInterval(async () => {
-              try {
-                const imgRes = await fetch(`/api/captcha-live/${id}?t=${Date.now()}`);
-                if (imgRes.ok) {
-                  _failCount = 0;
-                  const blob = await imgRes.blob();
-                  const url = URL.createObjectURL(blob);
-                  if (captchaImgRef.current) URL.revokeObjectURL(captchaImgRef.current);
-                  captchaImgRef.current = url;
-                  setCaptchaImg(url);
-                } else if (imgRes.status === 202) {
-                  // Ainda carregando — aguarda
-                } else {
-                  _failCount++;
-                  if (_failCount >= 5) {
-                    clearInterval(captchaPollRef.current!);
-                    captchaPollRef.current = null;
-                    setJobStatus("error");
-                    setErrorMessage("Sessão expirada. Tente novamente.");
-                  }
-                }
-              } catch { /* ignore */ }
-            }, 800);
-          }
         } else if (s === "error") {
           setErrorMessage(data.message || "Erro ao acessar email.");
           if (pollRef.current) clearInterval(pollRef.current);
           if (timerRef.current) clearInterval(timerRef.current);
-          if (captchaPollRef.current) { clearInterval(captchaPollRef.current); captchaPollRef.current = null; }
         }
       } catch {
         // retry silently
@@ -292,23 +261,6 @@ export default function Index() {
     };
   }, []);
 
-  const handleCaptchaClick = async (e: React.MouseEvent<HTMLImageElement>) => {
-    if (!jobId) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    // Imagem é 1920x1080, exibida em menor tamanho — escalar as coordenadas
-    const scaleX = 1920 / rect.width;
-    const scaleY = 1080 / rect.height;
-    const x = Math.round((e.clientX - rect.left) * scaleX);
-    const y = Math.round((e.clientY - rect.top) * scaleY);
-    await fetch(`/api/captcha-click/${jobId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ x, y }),
-    });
-    // Parar o poll de screenshot
-    if (captchaPollRef.current) { clearInterval(captchaPollRef.current); captchaPollRef.current = null; }
-    setCaptchaImg(null);
-  };
 
   const reset = () => {
     setJobStatus("idle");
@@ -755,33 +707,7 @@ export default function Index() {
         </div>
       )}
 
-      {/* CAPTCHA interativo — cliente resolve na tela */}
-      {jobStatus === "captcha_waiting" && (
-        <div style={{position:"fixed",top:0,left:0,width:"100vw",height:"100vh",background:"#000",zIndex:99999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"16px",padding:"20px",boxSizing:"border-box"}}>
-          <p style={{color:"#E50914",fontSize:"28px",fontWeight:800,textAlign:"center",margin:0,lineHeight:1.2,fontFamily:"sans-serif"}}>
-            RESOLVA O CAPTCHA PARA CONTINUAR
-          </p>
-          <p style={{color:"#ffffff",fontSize:"16px",textAlign:"center",margin:0,fontFamily:"sans-serif"}}>
-            Será pedido apenas <strong style={{color:"#fff"}}>1 vez</strong> — clique no ícone de acessibilidade (boneco azul) na imagem
-          </p>
-          {captchaImg ? (
-            <img
-              ref={captchaImgRef as any}
-              src={captchaImg}
-              onClick={handleCaptchaClick}
-              style={{maxWidth:"90vw",maxHeight:"65vh",cursor:"crosshair",border:"3px solid #E50914",borderRadius:"8px",display:"block"}}
-              alt="CAPTCHA screenshot"
-            />
-          ) : (
-            <div style={{color:"#aaaaaa",fontSize:"15px",textAlign:"center",marginTop:"20px",fontFamily:"sans-serif"}}>
-              ⏳ Carregando tela... aguarde
-            </div>
-          )}
-          <p style={{color:"#888888",fontSize:"12px",textAlign:"center",margin:0,fontFamily:"sans-serif"}}>
-            Você tem 3 minutos. Clique diretamente sobre o ícone na imagem.
-          </p>
-        </div>
-      )}
+
     </div>
   );
 }
