@@ -274,9 +274,9 @@ def _do_press_and_hold_inline(driver, job_id, attempt_num):
         time.sleep(0.5)
         
         if attempt_num <= 2:
-            hold_duration = random.uniform(14, 18)
+            hold_duration = random.uniform(14, 20)
         else:
-            hold_duration = random.uniform(18, 24)
+            hold_duration = random.uniform(18, 25)
         
         _log(job_id, f"Hold inline #px-captcha for {hold_duration:.1f}s [attempt {attempt_num}]")
         
@@ -368,9 +368,9 @@ def _do_press_and_hold(driver, captcha_iframe, attempt_num, job_id=""):
 
     # Vary hold duration
     if attempt_num <= 2:
-        hold_duration = random.uniform(14, 18)
+        hold_duration = random.uniform(14, 20)
     else:
-        hold_duration = random.uniform(18, 24)
+        hold_duration = random.uniform(18, 25)
 
     _log(job_id, f"Hold at offset ({off_x}, {off_y}) for {hold_duration:.1f}s [attempt {attempt_num}]")
 

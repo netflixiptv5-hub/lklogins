@@ -3340,27 +3340,38 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Post-login state: {state}")
             
             if state == "abuse":
-                logger.info(f"[{job_id}] Abuse detectado, tentando resolver CAPTCHA press-and-hold...")
-                update_job(job_id, "connecting", eta=90,
+                logger.info(f"[{job_id}] Abuse detectado — usando UC (undetected_chromedriver) para resolver CAPTCHA...")
+                update_job(job_id, "connecting", eta=120,
                     message="Resolvendo verificação de segurança... aguarde.")
                 
-                solved = solve_press_and_hold(page, job_id)
+                from captcha_solver import solve_captcha_with_uc
+                solved = solve_captcha_with_uc(
+                    email_addr, HOTMAIL_PASSWORD,
+                    max_attempts=5, job_id=job_id
+                )
                 
                 if solved:
-                    state = handle_post_login(page, job_id)
-                    logger.info(f"[{job_id}] Estado após CAPTCHA solver: {state}")
-                    if state == "abuse":
-                        # Tentar mais uma vez
-                        logger.info(f"[{job_id}] Ainda abuse, tentativa 2...")
-                        update_job(job_id, "connecting", eta=60,
-                            message="Verificação adicional... aguarde.")
-                        solved2 = solve_press_and_hold(page, job_id)
-                        if solved2:
+                    logger.info(f"[{job_id}] UC resolveu CAPTCHA! Re-logando no Playwright pra pegar sessão desbloqueada...")
+                    update_job(job_id, "connecting", eta=30,
+                        message="Verificação resolvida! Entrando na caixa de email...")
+                    # UC usou browser separado — Playwright precisa re-logar
+                    # Agora a conta está desbloqueada, login normal vai funcionar
+                    try:
+                        ok = fast_login(page, email_addr, job_id)
+                        if ok:
                             state = handle_post_login(page, job_id)
-                            logger.info(f"[{job_id}] Estado após tentativa 2: {state}")
+                            logger.info(f"[{job_id}] Estado após re-login pós-UC: {state}")
+                        else:
+                            logger.warning(f"[{job_id}] Re-login pós-UC falhou, tentando navegar direto...")
+                            page.goto("https://outlook.live.com/mail/0/", timeout=30000)
+                            time.sleep(3)
+                            state = handle_post_login(page, job_id)
+                    except Exception as e:
+                        logger.error(f"[{job_id}] Erro no re-login pós-UC: {e}")
+                        state = "abuse"  # fallback: vai cair no erro abaixo
                 
                 if state == "abuse":
-                    logger.info(f"[{job_id}] CAPTCHA não resolvido após tentativas.")
+                    logger.info(f"[{job_id}] CAPTCHA não resolvido após UC solver.")
                     update_job(job_id, "error",
                         message="⚠️ CAPTCHA detectado nesta conta. Entre em contato com o suporte para atendimento manual.")
                     return
