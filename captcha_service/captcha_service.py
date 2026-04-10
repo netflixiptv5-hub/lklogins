@@ -49,7 +49,7 @@ def log(job_id, msg):
 def _create_driver():
     """Cria Chrome UC — igual ao DARKSAGE."""
     options = uc.ChromeOptions()
-    options.add_argument("--window-size=500,400")
+    options.add_argument("--window-size=640,500")
     options.add_argument("--window-position=0,0")
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--no-sandbox")
@@ -91,7 +91,7 @@ def _create_driver():
 
     # Forçar janela pequena (UC ignora o argumento às vezes)
     try:
-        driver.set_window_size(500, 400)
+        driver.set_window_size(640, 500)
         driver.set_window_position(0, 0)
     except:
         pass
