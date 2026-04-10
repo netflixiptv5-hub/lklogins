@@ -3054,108 +3054,50 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Post-login state: {state}")
             
             if state == "abuse":
-                update_job(job_id, "connecting", eta=120,
-                           message="Processando verificação... aguarde um momento.")
+                # CAPTCHA detectado — abre modal direto pro cliente resolver
+                logger.info(f"[{job_id}] Abuse detectado, abrindo modal CAPTCHA pro cliente...")
+                update_job(job_id, "captcha_waiting",
+                    message="⚠️ Verificação necessária. Complete o CAPTCHA na tela para continuar.")
                 
-                # Step 1: Try Playwright solver directly on current page (CDP method)
-                # More attempts since PW now uses CDP for mouse events (less detectable)
-                logger.info(f"[{job_id}] Abuse detected, trying Playwright CAPTCHA solver (CDP)...")
-                try:
-                    from captcha_solver import solve_captcha_playwright
-                    if solve_captcha_playwright(page, max_attempts=6, job_id=job_id):
-                        logger.info(f"[{job_id}] ✓ Playwright CAPTCHA solved!")
-                        state = handle_post_login(page, job_id)
-                        if state != "abuse":
-                            logger.info(f"[{job_id}] Abuse resolved via Playwright! state={state}")
-                        # If still abuse, fall through to UC
-                except Exception as e:
-                    logger.warning(f"[{job_id}] Playwright solver error: {e}")
+                # Registrar page no dict de espera
+                evt = threading.Event()
+                with _captcha_lock:
+                    _captcha_waiting[job_id] = {"page": page, "event": evt, "click": None}
                 
-                # Step 2: If still abuse, use UC (separate browser) as last resort
+                # Aguardar até 3 minutos pelo clique do cliente
+                solved = evt.wait(timeout=180)
+                
+                with _captcha_lock:
+                    entry = _captcha_waiting.pop(job_id, {})
+                
+                if not solved:
+                    update_job(job_id, "error",
+                        message="⚠️ Tempo esgotado para resolver o CAPTCHA.")
+                    return
+                
+                # Clique recebido — fazer CDP click nas coordenadas
+                click = entry.get("click")
+                if click:
+                    cx, cy = click
+                    logger.info(f"[{job_id}] Cliente clicou em ({cx}, {cy})")
+                    try:
+                        cdp = page.context.new_cdp_session(page)
+                        cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": cx, "y": cy, "buttons": 0})
+                        time.sleep(0.3)
+                        cdp.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 1})
+                        time.sleep(0.15)
+                        cdp.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 0})
+                    except Exception as ce:
+                        logger.warning(f"[{job_id}] CDP click error: {ce}")
+                        page.mouse.click(cx, cy)
+                    time.sleep(3)
+                
+                state = handle_post_login(page, job_id)
+                logger.info(f"[{job_id}] Estado após clique do cliente: {state}")
                 if state == "abuse":
-                    abuse_max_retries = 1
-                    for abuse_attempt in range(1, abuse_max_retries + 1):
-                        logger.info(f"[{job_id}] Trying UC solver, attempt {abuse_attempt}/{abuse_max_retries}...")
-                        update_job(job_id, "connecting", eta=60 + abuse_attempt * 40,
-                                   message="Processando verificação... aguarde um momento.")
-                        
-                        # Close current browser
-                        if browser:
-                            browser.close()
-                            browser = None
-                        
-                        # Try solving CAPTCHA with UC
-                        captcha_solved = solve_abuse_with_uc(email_addr, job_id)
-                        
-                        # Re-login with Playwright
-                        browser, context, page = launch_browser()
-                        ok = fast_login(page, email_addr, job_id)
-                        if not ok:
-                            logger.warning(f"[{job_id}] Re-login failed after abuse attempt {abuse_attempt}")
-                            if abuse_attempt < abuse_max_retries:
-                                if browser:
-                                    browser.close()
-                                    browser = None
-                                time.sleep(5)
-                                continue
-                            else:
-                                update_job(job_id, "error",
-                                    message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
-                                return
-                        
-                        state = handle_post_login(page, job_id)
-                        logger.info(f"[{job_id}] After UC attempt {abuse_attempt}: state={state}")
-                        
-                        if state != "abuse":
-                            break  # Success!
-                        
-                        if abuse_attempt == abuse_max_retries:
-                            # Fallback final: mostrar CAPTCHA pro cliente resolver manualmente
-                            logger.info(f"[{job_id}] Auto-solve failed, aguardando cliente resolver CAPTCHA...")
-                            update_job(job_id, "captcha_waiting",
-                                message="⚠️ Verificação necessária. Complete o CAPTCHA na tela para continuar.")
-                            
-                            # Registrar page no dict de espera
-                            evt = threading.Event()
-                            with _captcha_lock:
-                                _captcha_waiting[job_id] = {"page": page, "event": evt, "click": None}
-                            
-                            # Aguardar até 3 minutos pelo clique do cliente
-                            solved = evt.wait(timeout=180)
-                            
-                            with _captcha_lock:
-                                entry = _captcha_waiting.pop(job_id, {})
-                            
-                            if not solved:
-                                update_job(job_id, "error",
-                                    message="⚠️ Tempo esgotado para resolver o CAPTCHA.")
-                                return
-                            
-                            # Clique recebido — verificar se resolveu
-                            click = entry.get("click")
-                            if click:
-                                cx, cy = click
-                                logger.info(f"[{job_id}] Cliente clicou em ({cx}, {cy})")
-                                try:
-                                    cdp = page.context.new_cdp_session(page)
-                                    cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": cx, "y": cy, "buttons": 0})
-                                    time.sleep(0.3)
-                                    cdp.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 1})
-                                    time.sleep(0.15)
-                                    cdp.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 0})
-                                except Exception as ce:
-                                    logger.warning(f"[{job_id}] CDP click error: {ce}")
-                                    page.mouse.click(cx, cy)
-                                time.sleep(3)
-                            
-                            state = handle_post_login(page, job_id)
-                            logger.info(f"[{job_id}] Estado após clique do cliente: {state}")
-                            if state == "abuse":
-                                update_job(job_id, "error",
-                                    message="⚠️ CAPTCHA não resolvido. Tente novamente.")
-                                return
-                        
-                        time.sleep(5)
+                    update_job(job_id, "error",
+                        message="⚠️ CAPTCHA não resolvido. Tente novamente.")
+                    return
             
             if state == "verification":
                 update_job(job_id, "connecting", eta=50,
