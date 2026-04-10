@@ -1360,6 +1360,50 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         return False
 
 
+def _solve_captcha_external(email: str, password: str, job_id: str) -> bool:
+    """
+    Chama o serviço externo de CAPTCHA (captcha_service.py rodando na máquina Windows).
+    Se o serviço não estiver disponível, tenta o UC local como fallback.
+    """
+    captcha_url = os.environ.get("CAPTCHA_SERVICE_URL", "").strip().rstrip("/")
+    
+    if captcha_url:
+        logger.info(f"[{job_id}] Chamando serviço externo: {captcha_url}/solve")
+        try:
+            import json
+            payload = json.dumps({
+                "email": email,
+                "password": password,
+                "job_id": job_id,
+            }).encode()
+            req = urllib.request.Request(
+                f"{captcha_url}/solve",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            # Timeout alto: CAPTCHA pode demorar até 2 min
+            resp = urllib.request.urlopen(req, timeout=180)
+            result = json.loads(resp.read().decode())
+            solved = result.get("solved", False)
+            msg = result.get("message", "")
+            logger.info(f"[{job_id}] Serviço externo: solved={solved}, msg={msg}")
+            return solved
+        except Exception as e:
+            logger.error(f"[{job_id}] Serviço externo falhou: {e}")
+            logger.info(f"[{job_id}] Tentando UC local como fallback...")
+    else:
+        logger.info(f"[{job_id}] CAPTCHA_SERVICE_URL não configurada, usando UC local...")
+
+    # Fallback: UC local (pode não funcionar no Railway, mas tenta)
+    try:
+        from captcha_solver import solve_captcha_with_uc
+        return solve_captcha_with_uc(email, password, max_attempts=5, job_id=job_id)
+    except Exception as e:
+        logger.error(f"[{job_id}] UC local também falhou: {e}")
+        return False
+
+
 def solve_press_and_hold(page, job_id: str, max_attempts: int = 5) -> bool:
     """
     Resolve o CAPTCHA PerimeterX 'Press & Hold' diretamente no Playwright.
@@ -3340,38 +3384,33 @@ def process_job(job_id: str, email_addr: str, service: str):
             logger.info(f"[{job_id}] Post-login state: {state}")
             
             if state == "abuse":
-                logger.info(f"[{job_id}] Abuse detectado — usando UC (undetected_chromedriver) para resolver CAPTCHA...")
+                logger.info(f"[{job_id}] Abuse detectado — chamando serviço externo de CAPTCHA...")
                 update_job(job_id, "connecting", eta=120,
                     message="Resolvendo verificação de segurança... aguarde.")
                 
-                from captcha_solver import solve_captcha_with_uc
-                solved = solve_captcha_with_uc(
-                    email_addr, HOTMAIL_PASSWORD,
-                    max_attempts=5, job_id=job_id
-                )
+                solved = _solve_captcha_external(email_addr, HOTMAIL_PASSWORD, job_id)
                 
                 if solved:
-                    logger.info(f"[{job_id}] UC resolveu CAPTCHA! Re-logando no Playwright pra pegar sessão desbloqueada...")
+                    logger.info(f"[{job_id}] CAPTCHA externo resolvido! Re-logando no Playwright...")
                     update_job(job_id, "connecting", eta=30,
                         message="Verificação resolvida! Entrando na caixa de email...")
-                    # UC usou browser separado — Playwright precisa re-logar
-                    # Agora a conta está desbloqueada, login normal vai funcionar
+                    # Serviço externo usou browser separado — Playwright precisa re-logar
                     try:
                         ok = fast_login(page, email_addr, job_id)
                         if ok:
                             state = handle_post_login(page, job_id)
-                            logger.info(f"[{job_id}] Estado após re-login pós-UC: {state}")
+                            logger.info(f"[{job_id}] Estado após re-login pós-CAPTCHA: {state}")
                         else:
-                            logger.warning(f"[{job_id}] Re-login pós-UC falhou, tentando navegar direto...")
+                            logger.warning(f"[{job_id}] Re-login falhou, tentando navegar direto...")
                             page.goto("https://outlook.live.com/mail/0/", timeout=30000)
                             time.sleep(3)
                             state = handle_post_login(page, job_id)
                     except Exception as e:
-                        logger.error(f"[{job_id}] Erro no re-login pós-UC: {e}")
-                        state = "abuse"  # fallback: vai cair no erro abaixo
+                        logger.error(f"[{job_id}] Erro no re-login: {e}")
+                        state = "abuse"
                 
                 if state == "abuse":
-                    logger.info(f"[{job_id}] CAPTCHA não resolvido após UC solver.")
+                    logger.info(f"[{job_id}] CAPTCHA não resolvido.")
                     update_job(job_id, "error",
                         message="⚠️ CAPTCHA detectado nesta conta. Entre em contato com o suporte para atendimento manual.")
                     return

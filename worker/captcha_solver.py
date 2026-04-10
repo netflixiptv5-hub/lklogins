@@ -129,6 +129,48 @@ def _find_captcha_iframe(driver, job_id):
             if is_captcha and rect.get('width', 0) > 50:
                 _log(job_id, f"  → CAPTCHA iframe encontrado via src match!")
                 return iframe
+            
+            # NOVO: iframe do hsprotect/PX com size 0x0 — forçar tamanho e entrar pra checar
+            if is_captcha and rect.get('width', 0) == 0:
+                _log(job_id, f"  iframe[{i}] é CAPTCHA mas size=0x0, forçando tamanho e verificando...")
+                try:
+                    # Forçar tamanho via JS
+                    driver.execute_script("""
+                        arguments[0].style.width = '400px';
+                        arguments[0].style.height = '300px';
+                        arguments[0].style.display = 'block';
+                        arguments[0].style.visibility = 'visible';
+                        arguments[0].style.opacity = '1';
+                        arguments[0].style.position = 'relative';
+                    """, iframe)
+                    time.sleep(2)
+                    # Re-checar tamanho
+                    new_rect = iframe.rect
+                    _log(job_id, f"  iframe[{i}] após forçar: size={new_rect.get('width',0)}x{new_rect.get('height',0)}")
+                    
+                    # Entrar no iframe e checar se tem #px-captcha
+                    driver.switch_to.frame(iframe)
+                    px = driver.find_elements(By.ID, "px-captcha")
+                    if px:
+                        px_rect = driver.execute_script(
+                            "var r=arguments[0].getBoundingClientRect();"
+                            "return{x:r.x,y:r.y,w:r.width,h:r.height};", px[0]
+                        )
+                        _log(job_id, f"  #px-captcha dentro do iframe 0x0: rect={px_rect}")
+                    driver.switch_to.default_content()
+                    
+                    if px:
+                        _log(job_id, f"  → CAPTCHA iframe encontrado (era 0x0, forçado tamanho)!")
+                        return iframe
+                    else:
+                        _log(job_id, f"  iframe[{i}] forçado mas sem #px-captcha dentro")
+                except Exception as fe:
+                    _log(job_id, f"  Erro ao forçar iframe: {str(fe)[:100]}")
+                    try:
+                        driver.switch_to.default_content()
+                    except:
+                        pass
+            
             if is_px_candidate:
                 # Verificar se tem #px-captcha dentro
                 try:
@@ -536,11 +578,11 @@ def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_
         clicked_next = _find_and_click_next(driver, job_id)
 
         if clicked_next:
-            _log(job_id, "UC: Clicked Next, waiting for CAPTCHA to load...")
-            time.sleep(random.uniform(5, 8))
+            _log(job_id, "UC: Clicked Next, waiting for CAPTCHA iframe to load...")
+            time.sleep(random.uniform(8, 12))
         else:
             _log(job_id, "UC: No Next button found, CAPTCHA may already be visible or page layout changed")
-            time.sleep(3)
+            time.sleep(5)
 
         _log(job_id, f"UC: Current URL after Next: {driver.current_url}")
 
@@ -552,21 +594,26 @@ def solve_captcha_with_uc(email: str, password: str, max_attempts: int = 5, job_
                 _log(job_id, "UC: ✓ CAPTCHA already solved!")
                 return True
 
-            # Find the captcha iframe
-            captcha_target = _find_captcha_iframe(driver, job_id)
-
-            if captcha_target is None:
-                _log(job_id, f"UC: No CAPTCHA found, waiting 8s... URL: {driver.current_url}")
-                time.sleep(8)
+            # Esperar iframe do CAPTCHA renderizar (PX pode demorar)
+            captcha_target = None
+            for wait_try in range(4):
+                captcha_target = _find_captcha_iframe(driver, job_id)
+                if captcha_target is not None:
+                    break
+                _log(job_id, f"UC: CAPTCHA não encontrado, esperando mais {5*(wait_try+1)}s... (tentativa {wait_try+1}/4)")
+                time.sleep(5)
                 if _check_abuse_solved(driver):
                     _log(job_id, "UC: ✓ Solved while waiting!")
                     return True
+
+            if captcha_target is None:
+                _log(job_id, f"UC: No CAPTCHA found após espera. URL: {driver.current_url}")
                 
                 # Tentar clicar Next de novo (pode ser que a página carregou)
                 if attempt <= 2:
                     _log(job_id, "UC: Tentando clicar Next novamente...")
                     if _find_and_click_next(driver, job_id):
-                        time.sleep(5)
+                        time.sleep(8)
                 continue
 
             # Execute press and hold
