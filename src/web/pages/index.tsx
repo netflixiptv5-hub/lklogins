@@ -259,9 +259,10 @@ export default function Index() {
                   if (captchaImgRef.current) URL.revokeObjectURL(captchaImgRef.current);
                   captchaImgRef.current = url;
                   setCaptchaImg(url);
+                } else if (imgRes.status === 202) {
+                  // Ainda carregando — aguarda
                 } else {
                   _failCount++;
-                  // Após 5 falhas consecutivas (4s), o job provavelmente expirou
                   if (_failCount >= 5) {
                     clearInterval(captchaPollRef.current!);
                     captchaPollRef.current = null;

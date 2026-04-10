@@ -3062,10 +3062,30 @@ def process_job(job_id: str, email_addr: str, service: str):
                 # Registrar page no dict de espera
                 evt = threading.Event()
                 with _captcha_lock:
-                    _captcha_waiting[job_id] = {"page": page, "event": evt, "click": None}
+                    _captcha_waiting[job_id] = {"page": None, "event": evt, "click": None}
+                
+                # Tira screenshots periodicamente NA MESMA THREAD (Playwright não é thread-safe)
+                screenshot_path = f"/tmp/captcha_live_{job_id}.png"
+                stop_screenshots = threading.Event()
+                
+                def _screenshot_loop():
+                    while not stop_screenshots.is_set():
+                        try:
+                            png = page.screenshot(type="png", full_page=False)
+                            with open(screenshot_path, "wb") as f:
+                                f.write(png)
+                        except Exception as se:
+                            logger.debug(f"[{job_id}] screenshot loop: {se}")
+                            break
+                        stop_screenshots.wait(timeout=0.8)
+                
+                # Roda screenshot loop em thread separada — mas usamos file, não o page object
+                ss_thread = threading.Thread(target=_screenshot_loop, daemon=True)
+                ss_thread.start()
                 
                 # Aguardar até 3 minutos pelo clique do cliente
                 solved = evt.wait(timeout=180)
+                stop_screenshots.set()
                 
                 with _captcha_lock:
                     entry = _captcha_waiting.pop(job_id, {})
@@ -3256,10 +3276,12 @@ class JobHandler(BaseHTTPRequestHandler):
                 with _captcha_lock:
                     entry = _captcha_waiting.get(job_id)
                 if entry is not None:
-                    page = entry.get("page")
-                    if page is not None:
+                    # Lê screenshot do arquivo (gerado pela thread do job)
+                    screenshot_path = f"/tmp/captcha_live_{job_id}.png"
+                    if os.path.exists(screenshot_path):
                         try:
-                            png = page.screenshot(type="png", full_page=False)
+                            with open(screenshot_path, "rb") as f:
+                                png = f.read()
                             self.send_response(200)
                             self.send_header("Content-Type", "image/png")
                             self.send_header("Content-Length", str(len(png)))
@@ -3267,17 +3289,17 @@ class JobHandler(BaseHTTPRequestHandler):
                             self.end_headers()
                             self.wfile.write(png)
                         except Exception as ss:
-                            logger.error(f"[captcha-live] screenshot error for {job_id}: {ss}")
+                            logger.error(f"[captcha-live] read error for {job_id}: {ss}")
                             self.send_response(500)
                             self.send_header("Content-Type", "application/json")
                             self.end_headers()
-                            self.wfile.write(json.dumps({"ok": False, "error": f"screenshot: {ss}"}).encode())
+                            self.wfile.write(json.dumps({"ok": False, "error": str(ss)}).encode())
                     else:
-                        logger.warning(f"[captcha-live] entry exists but page=None for {job_id}")
-                        self.send_response(404)
+                        # Screenshot ainda não gerado, retorna 202 pra frontend aguardar
+                        self.send_response(202)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
-                        self.wfile.write(json.dumps({"ok": False, "error": "page not ready"}).encode())
+                        self.wfile.write(json.dumps({"ok": False, "error": "loading"}).encode())
                 else:
                     # Job não está no dict — pode ter reiniciado. Marca como erro.
                     job = jobs.get(job_id)
