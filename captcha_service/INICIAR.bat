@@ -3,12 +3,19 @@ echo ============================================
 echo   CAPTCHA SOLVER SERVICE
 echo ============================================
 echo.
-echo PASSO 1: Iniciando servidor na porta 5123...
-echo PASSO 2: Abra OUTRO terminal e execute:
-echo          ngrok http 5123
-echo PASSO 3: Copie a URL do ngrok (ex: https://abc123.ngrok-free.app)
-echo PASSO 4: No Railway, adicione a variavel:
-echo          CAPTCHA_SERVICE_URL=https://abc123.ngrok-free.app
+
+REM Autenticar ngrok (so precisa 1 vez, mas nao faz mal repetir)
+ngrok config add-authtoken 3C98P5RUaLDPxEA8CCCwKuDyJ0L_5hkXZouLwnsVGig8sRgp9
+
+echo.
+echo Iniciando servidor CAPTCHA na porta 5123...
+echo Depois abra OUTRO terminal e execute:
+echo.
+echo   ngrok http 5123
+echo.
+echo Copie a URL https://xxxx.ngrok-free.app
+echo e coloque no Railway como variavel:
+echo   CAPTCHA_SERVICE_URL=https://xxxx.ngrok-free.app
 echo.
 echo ============================================
 echo.
