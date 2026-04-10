@@ -38,6 +38,11 @@ except Exception as _e:
     print(f"[WARNING] job_logger não disponível: {_e}")
 
 # === CONFIG ===
+# Jobs aguardando clique do cliente no CAPTCHA interativo
+# { job_id: { "page": page_obj, "event": threading.Event(), "click": (x,y) or None } }
+_captcha_waiting = {}
+_captcha_lock = threading.Lock()
+
 HOTMAIL_PASSWORD = "02022013L"
 HOTMAIL_PASSWORD_ALT = "A29b92c10@"
 # === Gmail accounts (login directly, not via MS) ===
@@ -3076,9 +3081,50 @@ def process_job(job_id: str, email_addr: str, service: str):
                             break  # Success!
                         
                         if abuse_attempt == abuse_max_retries:
-                            update_job(job_id, "error",
-                                message="⚠️ Não foi possível acessar esta conta. Entre em contato com o administrador.")
-                            return
+                            # Fallback final: mostrar CAPTCHA pro cliente resolver manualmente
+                            logger.info(f"[{job_id}] Auto-solve failed, aguardando cliente resolver CAPTCHA...")
+                            update_job(job_id, "captcha_waiting",
+                                message="⚠️ Verificação necessária. Complete o CAPTCHA na tela para continuar.")
+                            
+                            # Registrar page no dict de espera
+                            evt = threading.Event()
+                            with _captcha_lock:
+                                _captcha_waiting[job_id] = {"page": page, "event": evt, "click": None}
+                            
+                            # Aguardar até 3 minutos pelo clique do cliente
+                            solved = evt.wait(timeout=180)
+                            
+                            with _captcha_lock:
+                                entry = _captcha_waiting.pop(job_id, {})
+                            
+                            if not solved:
+                                update_job(job_id, "error",
+                                    message="⚠️ Tempo esgotado para resolver o CAPTCHA.")
+                                return
+                            
+                            # Clique recebido — verificar se resolveu
+                            click = entry.get("click")
+                            if click:
+                                cx, cy = click
+                                logger.info(f"[{job_id}] Cliente clicou em ({cx}, {cy})")
+                                try:
+                                    cdp = page.context.new_cdp_session(page)
+                                    cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": cx, "y": cy, "buttons": 0})
+                                    time.sleep(0.3)
+                                    cdp.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 1})
+                                    time.sleep(0.15)
+                                    cdp.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1, "buttons": 0})
+                                except Exception as ce:
+                                    logger.warning(f"[{job_id}] CDP click error: {ce}")
+                                    page.mouse.click(cx, cy)
+                                time.sleep(3)
+                            
+                            state = handle_post_login(page, job_id)
+                            logger.info(f"[{job_id}] Estado após clique do cliente: {state}")
+                            if state == "abuse":
+                                update_job(job_id, "error",
+                                    message="⚠️ CAPTCHA não resolvido. Tente novamente.")
+                                return
                         
                         time.sleep(5)
             
@@ -3178,6 +3224,31 @@ class JobHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+        elif self.path.startswith("/captcha-click/"):
+            job_id = self.path.split("/captcha-click/")[1].strip("/")
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(content_length))
+                x = body.get("x")
+                y = body.get("y")
+                with _captcha_lock:
+                    if job_id in _captcha_waiting:
+                        _captcha_waiting[job_id]["click"] = (x, y)
+                        _captcha_waiting[job_id]["event"].set()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"ok": True}).encode())
+                    else:
+                        self.send_response(404)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"ok": False, "error": "Job not waiting"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
         else:
             self.send_response(404)
             self.end_headers()
@@ -3202,6 +3273,39 @@ class JobHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+        elif self.path.startswith("/captcha-live/"):
+            job_id = self.path.split("/captcha-live/")[1].strip("/")
+            try:
+                with _captcha_lock:
+                    entry = _captcha_waiting.get(job_id)
+                if entry and entry.get("page"):
+                    page = entry["page"]
+                    import io
+                    png = page.screenshot(type="png", full_page=False)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(png)))
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    self.wfile.write(png)
+                else:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": False, "error": "Not waiting"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+        elif self.path.startswith("/captcha-status/"):
+            job_id = self.path.split("/captcha-status/")[1].strip("/")
+            with _captcha_lock:
+                waiting = job_id in _captcha_waiting
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"waiting": waiting}).encode())
         elif self.path.startswith("/screenshot/"):
             job_id = self.path.split("/screenshot/")[1].strip("/")
             screenshot_path = f"/tmp/captcha_debug_{job_id}.png"

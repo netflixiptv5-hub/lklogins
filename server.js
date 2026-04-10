@@ -96,6 +96,48 @@ app.get("/api/screenshot/:jobId", async (req, res) => {
   }
 });
 
+// === CAPTCHA interativo ===
+app.get("/api/captcha-live/:jobId", async (req, res) => {
+  try {
+    const r = await fetch(`${WORKER_URL}/captcha-live/${req.params.jobId}`);
+    if (r.ok) {
+      res.set("Content-Type", "image/png");
+      res.set("Cache-Control", "no-cache");
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.send(buf);
+    } else {
+      res.status(404).json({ ok: false, error: "Not waiting" });
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Worker unavailable" });
+  }
+});
+
+app.get("/api/captcha-status/:jobId", async (req, res) => {
+  try {
+    const r = await fetch(`${WORKER_URL}/captcha-status/${req.params.jobId}`);
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.json({ waiting: false });
+  }
+});
+
+app.post("/api/captcha-click/:jobId", async (req, res) => {
+  try {
+    const { x, y } = req.body;
+    const r = await fetch(`${WORKER_URL}/captcha-click/${req.params.jobId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x, y }),
+    });
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "Worker unavailable" });
+  }
+});
+
 app.post("/api/update", (req, res) => {
   const { jobId, status, link, code, message, method, eta, expired } = req.body;
   const job = jobs.get(jobId);
