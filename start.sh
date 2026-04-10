@@ -29,3 +29,4 @@ done
 
 # Start Node.js server (foreground)
 exec node server.js
+# force redeploy Fri Apr 10 02:24:31 UTC 2026
