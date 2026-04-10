@@ -3393,23 +3393,65 @@ def process_job(job_id: str, email_addr: str, service: str):
                 solved = _solve_captcha_external(email_addr, HOTMAIL_PASSWORD, job_id)
                 
                 if solved:
-                    logger.info(f"[{job_id}] CAPTCHA externo resolvido! Re-logando no Playwright...")
+                    logger.info(f"[{job_id}] CAPTCHA externo resolvido! Entrando no Outlook...")
                     update_job(job_id, "connecting", eta=30,
                         message="Verificação resolvida! Entrando na caixa de email...")
-                    # Serviço externo usou browser separado — Playwright precisa re-logar
+                    
+                    # Estratégia 1: Navegar direto pro Outlook (conta já desbloqueada)
+                    state = "ok"
                     try:
-                        ok = fast_login(page, email_addr, job_id)
-                        if ok:
-                            state = handle_post_login(page, job_id)
-                            logger.info(f"[{job_id}] Estado após re-login pós-CAPTCHA: {state}")
-                        else:
-                            logger.warning(f"[{job_id}] Re-login falhou, tentando navegar direto...")
+                        page.goto("https://outlook.live.com/mail/0/", timeout=30000)
+                        time.sleep(4)
+                        url_now = page.url.lower()
+                        logger.info(f"[{job_id}] Após navegar pro Outlook: {url_now[:120]}")
+                        
+                        if "abuse" in url_now:
+                            state = "abuse"
+                        elif "login.live.com" in url_now or "login.microsoftonline" in url_now:
+                            # Precisa re-logar
+                            logger.info(f"[{job_id}] Redirecionou pro login, re-logando...")
+                            ok = fast_login(page, email_addr, job_id)
+                            if ok:
+                                state = handle_post_login(page, job_id)
+                            else:
+                                state = "abuse"
+                        elif "outlook.live.com" in url_now:
+                            state = "ok"
+                            logger.info(f"[{job_id}] ✓ Entrou no Outlook direto!")
+                        elif "privacynotice" in url_now or "privacy" in url_now:
+                            # Tela de privacidade — clicar continuar/aceitar
+                            logger.info(f"[{job_id}] Tela de privacidade, tentando aceitar...")
+                            for sel in ["button:has-text('Continue')", "button:has-text('Continuar')", 
+                                       "button:has-text('Accept')", "button:has-text('Aceitar')",
+                                       "#id__0", "button.primary"]:
+                                try:
+                                    btn = page.locator(sel).first
+                                    if btn.is_visible(timeout=2000):
+                                        btn.click(timeout=5000)
+                                        logger.info(f"[{job_id}] Clicou '{sel}' na tela de privacidade")
+                                        time.sleep(3)
+                                        break
+                                except:
+                                    continue
+                            # Navegar pro Outlook de novo
                             page.goto("https://outlook.live.com/mail/0/", timeout=30000)
-                            time.sleep(3)
+                            time.sleep(4)
+                            state = handle_post_login(page, job_id)
+                        else:
                             state = handle_post_login(page, job_id)
                     except Exception as e:
-                        logger.error(f"[{job_id}] Erro no re-login: {e}")
-                        state = "abuse"
+                        logger.error(f"[{job_id}] Erro ao entrar no Outlook: {e}")
+                        # Última tentativa: re-login completo
+                        try:
+                            ok = fast_login(page, email_addr, job_id)
+                            if ok:
+                                state = handle_post_login(page, job_id)
+                            else:
+                                state = "abuse"
+                        except:
+                            state = "abuse"
+                    
+                    logger.info(f"[{job_id}] Estado final pós-CAPTCHA: {state}")
                 
                 if state == "abuse":
                     logger.info(f"[{job_id}] CAPTCHA não resolvido.")

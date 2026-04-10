@@ -49,7 +49,8 @@ def log(job_id, msg):
 def _create_driver():
     """Cria Chrome UC — igual ao DARKSAGE."""
     options = uc.ChromeOptions()
-    options.add_argument("--window-size=640,900")
+    options.add_argument("--window-size=400,350")
+    options.add_argument("--window-position=0,0")
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
