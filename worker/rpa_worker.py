@@ -311,41 +311,41 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60)
             mail.select("INBOX", readonly=True)
             cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
             
-            # If target_email specified, search TO that address; otherwise broad search
-            # Gmail ignores dots, so also search without dots for @gmail.com addresses
+            # Always do broad search — the recovery email shown by MS may not be
+            # the one that actually receives the code (e.g. MS shows te***@gmail.com
+            # but code goes to 14netflix@cinepremiu.com)
+            all_msg_ids = set()
+            
+            # 1. Try specific TO searches first
             if "@" in target_email:
                 local, domain = target_email.split("@", 1)
-                search_criteria = f'(FROM "microsoft" TO "{target_email}" SINCE "{cutoff}")'
-                # For Gmail, also try without dots (forwarded emails keep original TO)
-                alt_email = None
+                for search_to in [target_email]:
+                    criteria = f'(FROM "microsoft" TO "{search_to}" SINCE "{cutoff}")'
+                    st, ids = mail.search(None, criteria)
+                    if st == "OK" and ids[0]:
+                        all_msg_ids.update(ids[0].split())
+                
+                # Gmail dot-variant
                 if "gmail" in domain.lower():
                     nodots = local.replace(".", "")
                     if nodots != local:
-                        alt_email = f"{nodots}@{domain}"
-                    elif "." not in local:
-                        # Already no dots, try common dot variant
-                        alt_email = None
-            else:
-                search_criteria = f'(FROM "microsoft" SINCE "{cutoff}")'
-                alt_email = None
+                        alt = f"{nodots}@{domain}"
+                        criteria = f'(FROM "microsoft" TO "{alt}" SINCE "{cutoff}")'
+                        st, ids = mail.search(None, criteria)
+                        if st == "OK" and ids[0]:
+                            all_msg_ids.update(ids[0].split())
             
-            status, msg_ids = mail.search(None, search_criteria)
+            # 2. ALWAYS also do broad search (catches cases where MS sends to 
+            #    a different recovery email than what was shown on screen)
+            broad_criteria = f'(FROM "microsoft" SINCE "{cutoff}")'
+            st, ids = mail.search(None, broad_criteria)
+            if st == "OK" and ids[0]:
+                all_msg_ids.update(ids[0].split())
             
-            # If no results and we have an alt email, try that
-            if alt_email and (status != "OK" or not msg_ids[0]):
-                alt_criteria = f'(FROM "microsoft" TO "{alt_email}" SINCE "{cutoff}")'
-                logger.info(f"[{job_id}] No results for {target_email}, trying {alt_email}")
-                status, msg_ids = mail.search(None, alt_criteria)
-            
-            # Last resort: broad search if still nothing
-            if status != "OK" or not msg_ids[0]:
-                broad_criteria = f'(FROM "microsoft" SINCE "{cutoff}")'
-                status, msg_ids = mail.search(None, broad_criteria)
-                if status == "OK" and msg_ids[0]:
-                    logger.info(f"[{job_id}] Using broad MS search, will filter by content")
-
-            if status == "OK" and msg_ids[0]:
-                for msg_id in reversed(msg_ids[0].split()[-10:]):
+            if all_msg_ids:
+                # Sort by ID descending (newest first)
+                sorted_ids = sorted(all_msg_ids, key=lambda x: int(x), reverse=True)[:15]
+                for msg_id in sorted_ids:
                     if msg_id in seen_ids:
                         continue
                     seen_ids.add(msg_id)
