@@ -3011,9 +3011,27 @@ def _imap_get_new_code(min_id: int, target_to: str = "", max_wait: int = 120) ->
             cutoff = (datetime.now() - timedelta(minutes=10)).strftime("%d-%b-%Y")
             if target_to:
                 q = f'(FROM "microsoft" TO "{target_to}" SINCE "{cutoff}")'
+                # Gmail dot-variant fix: also try without dots
+                alt_to = None
+                if "@gmail" in target_to.lower():
+                    local, domain = target_to.split("@", 1)
+                    nodots = local.replace(".", "")
+                    if nodots != local:
+                        alt_to = f"{nodots}@{domain}"
             else:
                 q = f'(FROM "microsoft" SINCE "{cutoff}")'
+                alt_to = None
             status, ids = mail.search(None, q)
+            
+            # Try without dots if no results
+            if alt_to and (status != "OK" or not ids[0]):
+                q2 = f'(FROM "microsoft" TO "{alt_to}" SINCE "{cutoff}")'
+                status, ids = mail.search(None, q2)
+            
+            # Broad fallback
+            if status != "OK" or not ids[0]:
+                q3 = f'(FROM "microsoft" SINCE "{cutoff}")'
+                status, ids = mail.search(None, q3)
 
             if status == "OK" and ids[0]:
                 for mid_bytes in reversed(ids[0].split()):
