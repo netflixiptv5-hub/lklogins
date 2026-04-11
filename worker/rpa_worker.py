@@ -65,6 +65,13 @@ RECOVERY_PASSWORD = "02022013L@@@@"
 KNOWN_RECOVERY_EMAILS = [
     "tech34011@gmail.com",
     "tech.34011@gmail.com",
+    "tech34.011@gmail.com",
+    "t.ech34011@gmail.com",
+    "te.ch34011@gmail.com",
+    "tec.h34011@gmail.com",
+    "tech3.4011@gmail.com",
+    "tech340.11@gmail.com",
+    "tech3401.1@gmail.com",
     "te.ch3.4011@gmail.com",
     "catchall@cinepremiu.com",
 ]
@@ -2796,7 +2803,11 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
                 pass
 
 
-RECOVERY_FALLBACKS = ["netflix@cinepremiu.com", "netflix1@cinepremiu.com"]
+RECOVERY_FALLBACKS = (
+    ["netflix@cinepremiu.com"]
+    + [f"netflix{i}@cinepremiu.com" for i in range(1, 20)]
+    + [f"{i}netflix@cinepremiu.com" for i in range(1, 20)]
+)
 
 
 def _get_recovery_candidates(email_addr: str, masked_prefix: str) -> list:
