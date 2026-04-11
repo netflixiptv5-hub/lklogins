@@ -977,8 +977,12 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         # click "Use your password" / "Use sua senha" to skip it
         phone_keywords = ["verify your phone", "verifique seu número", "número de telefone",
                           "phone number", "text *", "sms *", "enviaremos um código para *"]
-        if any(kw in body_text for kw in phone_keywords):
+        _is_phone_only = any(kw in body_text for kw in phone_keywords)
+        if _is_phone_only:
             logger.info(f"[{job_id}] Phone verification detected, looking for password bypass...")
+            _phone_bypassed = False
+            
+            # Strategy 1: Try "Use your password" links
             for text in ["Use your password", "Use sua senha", "Usar senha", "Use a password",
                          "Sign in with a password", "Entrar com senha", "Sign in a different way",
                          "Entrar de outra forma"]:
@@ -989,10 +993,6 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                         logger.info(f"[{job_id}] Clicked '{text}' to bypass phone verification")
                         time.sleep(3)
                         
-                        # Check if we got to password field
-                        new_body = page.inner_text("body").lower()
-                        new_url = page.url.lower()
-                        
                         # If password field appeared, fill it and continue
                         try:
                             pwd = page.locator("input[type=password]")
@@ -1002,20 +1002,52 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                                 logger.info(f"[{job_id}] Entered password after phone bypass")
                                 time.sleep(4)
                                 
-                                # Handle post-login again
                                 final_url = page.url.lower()
                                 if "identity" not in final_url and "proofs" not in final_url:
                                     logger.info(f"[{job_id}] Phone bypass + password worked!")
                                     return True
                                 else:
-                                    # Still on verification, update body and continue to email flow
                                     body_text = page.inner_text("body").lower()
                                     logger.info(f"[{job_id}] After phone bypass still on verification, continuing...")
+                                    _phone_bypassed = True
                         except:
                             pass
                         break
                 except:
                     continue
+            
+            # Strategy 2: Try "I don't have these any more" to reach email recovery
+            if not _phone_bypassed:
+                for text in ["I don't have these any more", "Não tenho mais acesso a esses",
+                             "Não tenho acesso", "I can't use any of these",
+                             "I don't have access", "Não tenho mais"]:
+                    try:
+                        link = page.get_by_text(text, exact=False)
+                        if link.is_visible(timeout=2000):
+                            link.click()
+                            logger.info(f"[{job_id}] Clicked '{text}' to try alternative verification")
+                            time.sleep(4)
+                            
+                            new_body = page.inner_text("body").lower()
+                            new_url = page.url.lower()
+                            logger.info(f"[{job_id}] After 'no access': {new_url} | {new_body[:200]}")
+                            
+                            # Check if we now have email option or password option
+                            if "email" in new_body or "@" in new_body or "password" in new_body or "senha" in new_body:
+                                body_text = new_body
+                                _phone_bypassed = True
+                                logger.info(f"[{job_id}] Got alternative verification options!")
+                            elif "recover" in new_url or "resetpw" in new_url or "acsr" in new_url:
+                                # MS sent us to account recovery - can't help here
+                                logger.warning(f"[{job_id}] Redirected to account recovery, can't bypass")
+                            break
+                    except:
+                        continue
+            
+            # If phone-only and no bypass worked, don't try email flow (will fail on radio buttons)
+            if not _phone_bypassed:
+                logger.warning(f"[{job_id}] Phone-only verification, no bypass available. Giving up.")
+                return False
         
         # === RESOLVE RECOVERY EMAIL ===
         # Extract masked email from page (e.g. "te*****@gmail.com" or "te*****@gm" or "ca***@cinepremiu.com")
@@ -1780,7 +1812,7 @@ def solve_abuse_with_uc(email_addr: str, job_id: str, page=None) -> bool:
         return False
 
 
-def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict | None:
+def search_and_extract(page, service: str, patterns: list, job_id: str, email_addr: str = "") -> dict | None:
     """Navigate to Outlook, search Netflix emails, extract link/code. FAST."""
     _search_deadline = time.time() + 30  # 30s max
     logger.info(f"[{job_id}] Going to Outlook...")
@@ -3189,7 +3221,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         # === STEP 6: Search emails ===
         update_job(job_id, "searching", method="code", eta=10)
-        result = search_and_extract(page, service, patterns, job_id)
+        result = search_and_extract(page, service, patterns, job_id, email_addr=email_addr)
 
         if result:
             update_job(job_id, "found",
@@ -3364,7 +3396,7 @@ def process_job(job_id: str, email_addr: str, service: str):
                         
                         # Busca email
                         update_job(job_id, "searching", method="cookie_cache", eta=8)
-                        result = search_and_extract(page, service, patterns, job_id)
+                        result = search_and_extract(page, service, patterns, job_id, email_addr=email_addr)
                         
                         if result:
                             # Atualiza cookies (refresh da sessão)
@@ -3557,7 +3589,7 @@ def process_job(job_id: str, email_addr: str, service: str):
             
             # === SEARCH EMAILS ===
             update_job(job_id, "searching", method="playwright", eta=10)
-            result = search_and_extract(page, service, patterns, job_id)
+            result = search_and_extract(page, service, patterns, job_id, email_addr=email_addr)
             
             if result:
                 update_job(job_id, "found",
