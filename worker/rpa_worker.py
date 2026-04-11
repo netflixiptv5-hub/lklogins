@@ -3080,17 +3080,25 @@ def _get_recovery_candidates(email_addr: str, masked_prefix: str) -> list:
     """Build ordered list of recovery email candidates for code login.
     Most accounts: {username}@cinepremiu.com
     Some accounts: netflix@cinepremiu.com or netflix1@cinepremiu.com
+    Some accounts: tech34011@gmail.com (forwards to cinepremiu)
     """
     username = email_addr.split("@")[0].lower()
     candidates = []
     # 1. Always try username@cinepremiu.com first
     candidates.append(f"{username}@cinepremiu.com")
-    # 2. Fallbacks that match the masked prefix MS shows
+    # 2. Check KNOWN_RECOVERY_EMAILS that match the masked prefix (includes @gmail.com etc)
+    if masked_prefix:
+        prefix_lower = masked_prefix.lower()
+        for known in KNOWN_RECOVERY_EMAILS:
+            local = known.split("@")[0].replace(".", "")
+            if local.startswith(prefix_lower.replace(".", "")) and known not in candidates:
+                candidates.append(known)
+    # 3. Fallbacks that match the masked prefix MS shows
     for fb in RECOVERY_FALLBACKS:
         local = fb.split("@")[0]
         if local.startswith(masked_prefix.lower()) and fb not in candidates:
             candidates.append(fb)
-    # 3. Remaining fallbacks (even if prefix doesn't match — MS might truncate oddly)
+    # 4. Remaining fallbacks (even if prefix doesn't match — MS might truncate oddly)
     for fb in RECOVERY_FALLBACKS:
         if fb not in candidates:
             candidates.append(fb)
