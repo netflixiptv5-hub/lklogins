@@ -1298,10 +1298,30 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                             except:
                                 continue
                         
-                        # Find email input and re-fill with new candidate
+                        # After going back, we may land on radio button page again
+                        # Need to: select radio → click Next → then fill email input
+                        try:
+                            _radio = page.locator("input[type=radio]").first
+                            if _radio.is_visible(timeout=2000):
+                                _radio.click(force=True)
+                                logger.info(f"[{job_id}] Re-selected email radio")
+                                time.sleep(0.5)
+                                for next_text in ["Next", "Próximo", "Continue", "Continuar"]:
+                                    try:
+                                        btn = page.get_by_role("button", name=next_text)
+                                        if btn.is_visible(timeout=2000):
+                                            btn.click()
+                                            logger.info(f"[{job_id}] Clicked: {next_text}")
+                                            break
+                                    except:
+                                        continue
+                                time.sleep(4)
+                        except:
+                            pass
+                        
+                        # Find email text input (NOT radio)
                         _alt_input = None
                         for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt])",
-                                     "input[id*='iProof']", "input[id*='iOttText']",
                                      "input[name*='iProofEmail']", "input[placeholder*='@']",
                                      "input[placeholder*='email']"]:
                             try:
