@@ -3122,32 +3122,37 @@ def _imap_get_max_id() -> int:
 
 
 def _gmail_imap_get_code(gmail_addr: str, min_id: int, max_wait: int = 120) -> str | None:
-    """Read MS verification code directly from Gmail IMAP (faster than forwarding)."""
+    """Read MS verification code directly from Gmail IMAP (faster than forwarding).
+    Uses timestamp-based filtering: only accepts the NEWEST MS email received after we clicked Send.
+    """
     # Normalize: tech.34011@gmail.com -> tech34011@gmail.com for IMAP lookup
     local = gmail_addr.split("@")[0].replace(".", "")
     canonical = f"{local}@gmail.com"
     app_pass = GMAIL_IMAP_ACCOUNTS.get(canonical)
     if not app_pass:
-        # Try original too
         app_pass = GMAIL_IMAP_ACCOUNTS.get(gmail_addr)
     if not app_pass:
         return None
 
-    logger.info(f"Reading code directly from Gmail IMAP: {canonical}")
+    # Record the time we started waiting (code was just sent by MS)
+    send_time = time.time()
+    logger.info(f"Reading code directly from Gmail IMAP: {canonical} (min_id>{min_id})")
     start = time.time()
+    seen_codes = set()
 
     while time.time() - start < max_wait:
         try:
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=10)
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=15)
             mail.login(canonical, app_pass)
             mail.select("INBOX", readonly=True)
 
-            cutoff = (datetime.now() - timedelta(minutes=10)).strftime("%d-%b-%Y")
+            cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
             q = f'(FROM "microsoft" SINCE "{cutoff}")'
             status, ids = mail.search(None, q)
 
             if status == "OK" and ids[0]:
-                for mid_bytes in reversed(ids[0].split()):
+                # Check newest first
+                for mid_bytes in reversed(ids[0].split()[-10:]):
                     mid_int = int(mid_bytes)
                     if mid_int <= min_id:
                         continue
@@ -3178,11 +3183,59 @@ def _gmail_imap_get_code(gmail_addr: str, min_id: int, max_wait: int = 120) -> s
                             m = re.findall(pat, body, re.IGNORECASE)
                             if m:
                                 code = m[0].strip()
-                                logger.info(f"GOT CODE from Gmail: {code}")
+                                logger.info(f"GOT CODE from Gmail: {code} (id={mid_int})")
                                 mail.logout()
                                 return code
                     except:
                         continue
+
+                # Also try: if no new ID found, grab the NEWEST email regardless of min_id
+                # (in case Gmail reused the ID or search was delayed)
+                newest_mid = ids[0].split()[-1]
+                newest_int = int(newest_mid)
+                if newest_int not in seen_codes:
+                    seen_codes.add(newest_int)
+                    try:
+                        _, data = mail.fetch(newest_mid, "(RFC822)")
+                        msg = email_lib.message_from_bytes(data[0][1])
+                        # Check if this email was received recently (within 3 min of send_time)
+                        date_str = msg.get("Date", "")
+                        from email.utils import parsedate_to_datetime
+                        try:
+                            email_dt = parsedate_to_datetime(date_str)
+                            email_ts = email_dt.timestamp()
+                            # Only accept if email arrived after we started waiting (with 30s grace)
+                            if email_ts >= send_time - 30:
+                                body = ""
+                                if msg.is_multipart():
+                                    for part in msg.walk():
+                                        if part.get_content_type() in ("text/plain", "text/html"):
+                                            p = part.get_payload(decode=True)
+                                            if p:
+                                                body += p.decode(part.get_content_charset() or "utf-8", errors="ignore")
+                                else:
+                                    p = msg.get_payload(decode=True)
+                                    if p:
+                                        body += p.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+
+                                for pat in [
+                                    r'código de uso único é:\s*(\d{4,8})',
+                                    r'one-time code is:\s*(\d{4,8})',
+                                    r'código de segurança[:\s]+(\d{4,8})',
+                                    r'security code[:\s]+(\d{4,8})',
+                                    r'>\s*(\d{6,8})\s*<',
+                                    r'(?:code|código)[:\s]*(\d{6})',
+                                ]:
+                                    m = re.findall(pat, body, re.IGNORECASE)
+                                    if m:
+                                        code = m[0].strip()
+                                        logger.info(f"GOT CODE from Gmail (newest fallback): {code}")
+                                        mail.logout()
+                                        return code
+                        except:
+                            pass
+                    except:
+                        pass
 
             mail.logout()
         except Exception as e:
@@ -3190,7 +3243,7 @@ def _gmail_imap_get_code(gmail_addr: str, min_id: int, max_wait: int = 120) -> s
 
         elapsed = int(time.time() - start)
         logger.info(f"... waiting Gmail {elapsed}s")
-        time.sleep(5)
+        time.sleep(3)
 
     return None
 
