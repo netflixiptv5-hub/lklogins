@@ -981,7 +981,7 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             logger.info(f"[{job_id}] Phone verification detected, looking for password bypass...")
             for text in ["Use your password", "Use sua senha", "Usar senha", "Use a password",
                          "Sign in with a password", "Entrar com senha", "Sign in a different way",
-                         "Entrar de outra forma", "I have a code", "Já recebeu um código"]:
+                         "Entrar de outra forma"]:
                 try:
                     link = page.get_by_text(text)
                     if link.is_visible(timeout=2000):
@@ -1798,6 +1798,8 @@ def search_and_extract(page, service: str, patterns: list, job_id: str) -> dict 
             "https://outlook.live.com/mail/",
             "https://outlook.live.com/owa/",
             "https://outlook.live.com/mail/0/?nlp=1",
+            "https://outlook.live.com/mail/0/?login_hint=" + email_addr,
+            "https://outlook.office.com/mail/",
         ]
         for outlook_url in outlook_urls:
             try:
