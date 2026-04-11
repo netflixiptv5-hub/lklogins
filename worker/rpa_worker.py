@@ -275,8 +275,10 @@ def resolve_recovery_email(masked_prefix: str, masked_domain_hint: str, job_id: 
     return None
 
 
-def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60) -> str | None:
-    """Get Microsoft verification code from @cinepremiu.com via IMAP."""
+def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60, min_timestamp: float = 0) -> str | None:
+    """Get Microsoft verification code from @cinepremiu.com via IMAP.
+    min_timestamp: only accept emails received AFTER this unix timestamp (to skip old codes).
+    """
     logger.info(f"[{job_id}] Waiting for MS verification code...")
     start = time.time()
     seen_ids = set()
@@ -303,6 +305,23 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60)
                     try:
                         _, msg_data = mail.fetch(msg_id, "(RFC822)")
                         msg = email_lib.message_from_bytes(msg_data[0][1])
+                        
+                        # Skip emails older than min_timestamp
+                        if min_timestamp > 0:
+                            try:
+                                date_str = msg.get("Date", "")
+                                if date_str:
+                                    msg_dt = parsedate_to_datetime(date_str)
+                                    from datetime import timezone
+                                    if msg_dt.tzinfo is None:
+                                        msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+                                    msg_ts = msg_dt.timestamp()
+                                    # Allow 30s tolerance (clock skew between servers)
+                                    if msg_ts < min_timestamp - 30:
+                                        continue
+                            except:
+                                pass  # Can't parse date, try anyway
+                        
                         body = ""
                         if msg.is_multipart():
                             for part in msg.walk():
@@ -1189,12 +1208,14 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                 except:
                     continue
             
+            _send_code_ts = time.time()  # timestamp before sending code, to filter old codes
             if text_input:
                 text_input.fill(recovery)
                 logger.info(f"[{job_id}] Typed recovery email: {recovery}")
                 time.sleep(0.5)
                 
                 # Click Send code
+                _send_code_ts = time.time()
                 for text in ["Send code", "Enviar código", "Get code", "Obter código"]:
                     try:
                         btn = page.get_by_role("button", name=text)
@@ -1232,8 +1253,9 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                 return True
             
             # Code was sent — wait for it via IMAP and enter it
+            # Use _send_code_ts to only accept codes newer than when we clicked Send
             logger.info(f"[{job_id}] Code sent! Waiting for IMAP delivery...")
-            code = get_ms_verification_code(recovery, job_id, max_wait=55)
+            code = get_ms_verification_code(recovery, job_id, max_wait=55, min_timestamp=_send_code_ts)
             if not code:
                 logger.error(f"[{job_id}] Code not received via IMAP")
                 return False
@@ -1340,18 +1362,18 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                     else:
                         logger.warning(f"[{job_id}] Still on verification, page body: {final_body[:300]}")
                     
-                    # Retry: maybe MS needs a second code or page reloaded
-                    # Check if there's a "Send code" or "I have a code" button again
-                    for retry_text in ["Send code", "Enviar código", "I have a code", "Eu tenho um código", "Send", "Enviar"]:
+                    # Retry: click "Send code" again and wait for a NEW code (ignore old one)
+                    for retry_text in ["Send code", "Enviar código", "Send", "Enviar"]:
                         try:
                             retry_btn = page.get_by_role("button", name=retry_text)
                             if retry_btn.is_visible(timeout=1500):
                                 retry_btn.click()
                                 logger.info(f"[{job_id}] Retry: clicked '{retry_text}', waiting for new code...")
-                                time.sleep(8)
-                                # Get new code
-                                new_code = get_ms_verification_code(job_id, recovery_email, imap_host, imap_user, imap_pass)
-                                if new_code:
+                                _retry_ts = time.time()
+                                time.sleep(10)
+                                # Get new code — must be newer than retry click
+                                new_code = get_ms_verification_code(recovery, job_id, max_wait=55, min_timestamp=_retry_ts)
+                                if new_code and new_code != code:
                                     code_input2 = page.locator("input[type=tel], input[type=number], input[type=text][id*='iOttText'], input[id*='iOttText']").first
                                     if code_input2.is_visible(timeout=2000):
                                         code_input2.fill("")
@@ -1371,6 +1393,8 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                                         if "identity" not in final_url2 and "proofs" not in final_url2:
                                             logger.info(f"[{job_id}] Retry: verification completed!")
                                             return True
+                                elif new_code == code:
+                                    logger.warning(f"[{job_id}] Retry: got same code {code} again, MS may not have sent new one")
                                 break
                         except:
                             continue
