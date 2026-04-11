@@ -53,6 +53,7 @@ GMAIL_ACCOUNTS = {
 # === Gmail IMAP direct (senha de app) ===
 GMAIL_IMAP_ACCOUNTS = {
     "ck100k2@gmail.com": "hfxcbsmvviiojkiw",
+    "tech34011@gmail.com": "uwoyllawskfdeyja",
 }
 
 RECOVERY_DOMAIN = "cinepremiu.com"
@@ -3120,6 +3121,100 @@ def _imap_get_max_id() -> int:
         return 0
 
 
+def _gmail_imap_get_code(gmail_addr: str, min_id: int, max_wait: int = 120) -> str | None:
+    """Read MS verification code directly from Gmail IMAP (faster than forwarding)."""
+    # Normalize: tech.34011@gmail.com -> tech34011@gmail.com for IMAP lookup
+    local = gmail_addr.split("@")[0].replace(".", "")
+    canonical = f"{local}@gmail.com"
+    app_pass = GMAIL_IMAP_ACCOUNTS.get(canonical)
+    if not app_pass:
+        # Try original too
+        app_pass = GMAIL_IMAP_ACCOUNTS.get(gmail_addr)
+    if not app_pass:
+        return None
+
+    logger.info(f"Reading code directly from Gmail IMAP: {canonical}")
+    start = time.time()
+
+    while time.time() - start < max_wait:
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=10)
+            mail.login(canonical, app_pass)
+            mail.select("INBOX", readonly=True)
+
+            cutoff = (datetime.now() - timedelta(minutes=10)).strftime("%d-%b-%Y")
+            q = f'(FROM "microsoft" SINCE "{cutoff}")'
+            status, ids = mail.search(None, q)
+
+            if status == "OK" and ids[0]:
+                for mid_bytes in reversed(ids[0].split()):
+                    mid_int = int(mid_bytes)
+                    if mid_int <= min_id:
+                        continue
+
+                    try:
+                        _, data = mail.fetch(mid_bytes, "(RFC822)")
+                        msg = email_lib.message_from_bytes(data[0][1])
+                        body = ""
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                if part.get_content_type() in ("text/plain", "text/html"):
+                                    p = part.get_payload(decode=True)
+                                    if p:
+                                        body += p.decode(part.get_content_charset() or "utf-8", errors="ignore")
+                        else:
+                            p = msg.get_payload(decode=True)
+                            if p:
+                                body += p.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+
+                        for pat in [
+                            r'código de uso único é:\s*(\d{4,8})',
+                            r'one-time code is:\s*(\d{4,8})',
+                            r'código de segurança[:\s]+(\d{4,8})',
+                            r'security code[:\s]+(\d{4,8})',
+                            r'>\s*(\d{6,8})\s*<',
+                            r'(?:code|código)[:\s]*(\d{6})',
+                        ]:
+                            m = re.findall(pat, body, re.IGNORECASE)
+                            if m:
+                                code = m[0].strip()
+                                logger.info(f"GOT CODE from Gmail: {code}")
+                                mail.logout()
+                                return code
+                    except:
+                        continue
+
+            mail.logout()
+        except Exception as e:
+            logger.warning(f"Gmail IMAP err: {e}")
+
+        elapsed = int(time.time() - start)
+        logger.info(f"... waiting Gmail {elapsed}s")
+        time.sleep(5)
+
+    return None
+
+
+def _gmail_get_max_id(gmail_addr: str) -> int:
+    """Get highest IMAP ID from Gmail inbox."""
+    local = gmail_addr.split("@")[0].replace(".", "")
+    canonical = f"{local}@gmail.com"
+    app_pass = GMAIL_IMAP_ACCOUNTS.get(canonical) or GMAIL_IMAP_ACCOUNTS.get(gmail_addr)
+    if not app_pass:
+        return 0
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=10)
+        mail.login(canonical, app_pass)
+        mail.select("INBOX", readonly=True)
+        status, ids = mail.search(None, "ALL")
+        mail.logout()
+        if status == "OK" and ids[0]:
+            return max(int(i) for i in ids[0].split())
+        return 0
+    except:
+        return 0
+
+
 def _imap_get_new_code(min_id: int, target_to: str = "", max_wait: int = 120) -> str | None:
     """Get MS verification code from IMAP, only from messages with ID > min_id."""
     logger.info(f"Waiting for new code (min_id>{min_id}, to={target_to}, max={max_wait}s)")
@@ -3248,8 +3343,18 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         for recovery in candidates:
             logger.info(f"[{job_id}] Trying recovery: {recovery}")
 
+            # Check if this is a Gmail with direct IMAP access
+            _recovery_canonical = recovery.split("@")[0].replace(".", "") + "@gmail.com" if "@gmail.com" in recovery else ""
+            _use_gmail_direct = bool(_recovery_canonical and (
+                GMAIL_IMAP_ACCOUNTS.get(_recovery_canonical) or GMAIL_IMAP_ACCOUNTS.get(recovery)
+            ))
+
             # Snapshot IMAP max ID before sending
-            max_id_before = _imap_get_max_id()
+            if _use_gmail_direct:
+                max_id_before = _gmail_get_max_id(recovery)
+                logger.info(f"[{job_id}] Will read code from Gmail IMAP directly")
+            else:
+                max_id_before = _imap_get_max_id()
 
             inp = page.locator("#proof-confirmation-email-input")
             if not inp.is_visible(timeout=2000):
@@ -3281,10 +3386,14 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
             update_job(job_id, "connecting", method="code", eta=45,
                        message="Código enviado, aguardando email...")
 
-            code = _imap_get_new_code(min_id=max_id_before, target_to=recovery, max_wait=120)
-            if not code:
-                # Broad search (catchall might receive with different TO)
-                code = _imap_get_new_code(min_id=max_id_before, target_to="", max_wait=30)
+            if _use_gmail_direct:
+                # Read directly from Gmail — much faster than waiting for forwarding
+                code = _gmail_imap_get_code(recovery, min_id=max_id_before, max_wait=120)
+            else:
+                code = _imap_get_new_code(min_id=max_id_before, target_to=recovery, max_wait=120)
+                if not code:
+                    # Broad search (catchall might receive with different TO)
+                    code = _imap_get_new_code(min_id=max_id_before, target_to="", max_wait=30)
 
             if code:
                 logger.info(f"[{job_id}] Got code: {code}")
