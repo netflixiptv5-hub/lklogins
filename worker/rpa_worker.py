@@ -2751,7 +2751,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
         
         pw = sync_playwright().start()
         browser = pw.chromium.launch(
-            _should_use_headless(),
+            headless=_should_use_headless(),
             channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
                    "--disable-blink-features=AutomationControlled"]
@@ -2933,7 +2933,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         pw = sync_playwright().start()
         browser = pw.chromium.launch(
-            _should_use_headless(), channel="chrome",
+            headless=_should_use_headless(), channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
                   "--disable-blink-features=AutomationControlled"]
         )
@@ -3238,7 +3238,7 @@ def process_job(job_id: str, email_addr: str, service: str):
         
         def launch_browser():
             b = pw.chromium.launch(
-                _should_use_headless(),
+                headless=_should_use_headless(),
                 channel="chrome",
                 args=["--no-sandbox", "--disable-dev-shm-usage",
                        "--disable-blink-features=AutomationControlled"]
