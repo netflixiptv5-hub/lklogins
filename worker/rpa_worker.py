@@ -2952,12 +2952,10 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
 
 
 RECOVERY_FALLBACKS = [
-    "netflix@cinepremiu.com", "netflix1@cinepremiu.com",
-    "netflix2@cinepremiu.com", "netflix3@cinepremiu.com",
-    "netflix4@cinepremiu.com", "netflix5@cinepremiu.com",
-    "netflix6@cinepremiu.com", "netflix7@cinepremiu.com",
-    "netflix8@cinepremiu.com", "netflix9@cinepremiu.com",
-] + TECH_VARIANTS
+    "netflix@cinepremiu.com",
+] + [f"netflix{i}@cinepremiu.com" for i in range(1, 20)] \
+  + [f"{i}netflix@cinepremiu.com" for i in range(1, 20)] \
+  + TECH_VARIANTS
 
 
 def _get_recovery_candidates(email_addr: str, masked_prefix: str) -> list:
