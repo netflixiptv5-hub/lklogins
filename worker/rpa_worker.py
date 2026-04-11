@@ -312,11 +312,37 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60)
             cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
             
             # If target_email specified, search TO that address; otherwise broad search
+            # Gmail ignores dots, so also search without dots for @gmail.com addresses
             if "@" in target_email:
+                local, domain = target_email.split("@", 1)
                 search_criteria = f'(FROM "microsoft" TO "{target_email}" SINCE "{cutoff}")'
+                # For Gmail, also try without dots (forwarded emails keep original TO)
+                alt_email = None
+                if "gmail" in domain.lower():
+                    nodots = local.replace(".", "")
+                    if nodots != local:
+                        alt_email = f"{nodots}@{domain}"
+                    elif "." not in local:
+                        # Already no dots, try common dot variant
+                        alt_email = None
             else:
                 search_criteria = f'(FROM "microsoft" SINCE "{cutoff}")'
+                alt_email = None
+            
             status, msg_ids = mail.search(None, search_criteria)
+            
+            # If no results and we have an alt email, try that
+            if alt_email and (status != "OK" or not msg_ids[0]):
+                alt_criteria = f'(FROM "microsoft" TO "{alt_email}" SINCE "{cutoff}")'
+                logger.info(f"[{job_id}] No results for {target_email}, trying {alt_email}")
+                status, msg_ids = mail.search(None, alt_criteria)
+            
+            # Last resort: broad search if still nothing
+            if status != "OK" or not msg_ids[0]:
+                broad_criteria = f'(FROM "microsoft" SINCE "{cutoff}")'
+                status, msg_ids = mail.search(None, broad_criteria)
+                if status == "OK" and msg_ids[0]:
+                    logger.info(f"[{job_id}] Using broad MS search, will filter by content")
 
             if status == "OK" and msg_ids[0]:
                 for msg_id in reversed(msg_ids[0].split()[-10:]):
