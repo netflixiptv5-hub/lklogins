@@ -689,11 +689,73 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
     # 1) Password field directly
     # 2) "Verify your email" + "Use your password" link  
     # 3) Account doesn't exist error
+    # 4) Phone verification ("Verifique seu número de telefone") with "Outras maneiras de entrar"
+    #    → leads to "Entrar de outra forma" with "Use sua senha"
     
-    # Check for "Use your password" link first (common for verified accounts)
-    for text in ["Use your password", "Use sua senha", "Usar senha", "Use a password"]:
+    # Check error first
+    try:
+        body = page.inner_text("body").lower()
+        if "doesn't exist" in body or "não existe" in body or "that microsoft account doesn" in body:
+            logger.error(f"[{job_id}] Account doesn't exist")
+            return False
+    except:
+        body = ""
+    
+    # === PHONE VERIFICATION SCREEN (before password) ===
+    # MS shows "Verifique seu número de telefone" / "Verify your phone number"
+    # with "Outras maneiras de entrar" / "Other ways to sign in" link
+    # Clicking it leads to "Entrar de outra forma" with "Use sua senha"
+    _phone_screen_keywords = ["verifique seu número", "verify your phone", "número de telefone",
+                              "phone number", "enviaremos um código para"]
+    if any(kw in body for kw in _phone_screen_keywords):
+        logger.info(f"[{job_id}] Phone verification screen detected (pre-login), looking for alternatives...")
+        
+        # Step 1: Click "Outras maneiras de entrar" / "Other ways to sign in"
+        _found_alt = False
+        for text in ["Outras maneiras de entrar", "Other ways to sign in", 
+                      "Sign in another way", "Outras formas de entrar",
+                      "I can't use this right now", "Não posso usar isso agora"]:
+            try:
+                link = page.get_by_text(text, exact=False)
+                if link.is_visible(timeout=2000):
+                    link.click()
+                    logger.info(f"[{job_id}] Clicked '{text}'")
+                    time.sleep(3)
+                    _found_alt = True
+                    break
+            except:
+                continue
+        
+        if not _found_alt:
+            logger.warning(f"[{job_id}] Could not find 'Outras maneiras de entrar', trying links...")
+            # Try any link/button that might lead to alternatives
+            try:
+                links = page.locator("a, button").all()
+                for l in links:
+                    try:
+                        lt = l.inner_text().lower().strip()
+                        if "outra" in lt or "other" in lt or "different" in lt:
+                            l.click()
+                            logger.info(f"[{job_id}] Clicked alt link: '{lt}'")
+                            time.sleep(3)
+                            _found_alt = True
+                            break
+                    except:
+                        continue
+            except:
+                pass
+        
+        # Step 2: Now on "Entrar de outra forma" — click "Use sua senha"
+        if _found_alt:
+            body = page.inner_text("body").lower()
+            logger.info(f"[{job_id}] Alt sign-in page: {body[:200]}")
+    
+    # === TRY "Use your password" / "Use sua senha" ===
+    # Works both for direct prompt AND after phone bypass above
+    for text in ["Use your password", "Use sua senha", "Usar senha", "Use a password",
+                 "Sign in with a password", "Entrar com senha"]:
         try:
-            link = page.get_by_text(text)
+            link = page.get_by_text(text, exact=False)
             if link.is_visible(timeout=1500):
                 link.click()
                 logger.info(f"[{job_id}] Clicked '{text}'")
@@ -701,15 +763,6 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
                 break
         except:
             continue
-    
-    # Check error
-    try:
-        body = page.inner_text("body").lower()
-        if "doesn't exist" in body or "não existe" in body or "that microsoft account doesn" in body:
-            logger.error(f"[{job_id}] Account doesn't exist")
-            return False
-    except:
-        pass
     
     # Wait for password field
     try:
@@ -719,6 +772,8 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
         logger.error(f"[{job_id}] Password field not found")
         try:
             page.screenshot(path=f"/tmp/login_fail_{job_id}.png")
+            body_now = page.inner_text("body").lower()
+            logger.error(f"[{job_id}] Page text: {body_now[:300]}")
         except:
             pass
         return False
@@ -735,7 +790,6 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
             if "incorrect" in body or "incorreta" in body or "contraseña incorrecta" in body:
                 if attempt == 0:
                     logger.info(f"[{job_id}] Primary password failed, trying alternative...")
-                    # Need to clear and re-enter — password field should still be visible
                     try:
                         pwd2 = page.locator("input[type=password]")
                         pwd2.wait_for(timeout=3000)
