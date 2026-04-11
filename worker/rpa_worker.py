@@ -972,6 +972,51 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         url = page.url.lower()
         logger.info(f"[{job_id}] Verification URL: {url}")
         
+        # === PHONE VERIFICATION BYPASS ===
+        # If MS shows phone verification (e.g. "verify your phone number", "text *****54"),
+        # click "Use your password" / "Use sua senha" to skip it
+        phone_keywords = ["verify your phone", "verifique seu número", "número de telefone",
+                          "phone number", "text *", "sms *", "enviaremos um código para *"]
+        if any(kw in body_text for kw in phone_keywords):
+            logger.info(f"[{job_id}] Phone verification detected, looking for password bypass...")
+            for text in ["Use your password", "Use sua senha", "Usar senha", "Use a password",
+                         "Sign in with a password", "Entrar com senha", "Sign in a different way",
+                         "Entrar de outra forma", "I have a code", "Já recebeu um código"]:
+                try:
+                    link = page.get_by_text(text)
+                    if link.is_visible(timeout=2000):
+                        link.click()
+                        logger.info(f"[{job_id}] Clicked '{text}' to bypass phone verification")
+                        time.sleep(3)
+                        
+                        # Check if we got to password field
+                        new_body = page.inner_text("body").lower()
+                        new_url = page.url.lower()
+                        
+                        # If password field appeared, fill it and continue
+                        try:
+                            pwd = page.locator("input[type=password]")
+                            if pwd.is_visible(timeout=3000):
+                                pwd.fill(HOTMAIL_PASSWORD)
+                                page.keyboard.press("Enter")
+                                logger.info(f"[{job_id}] Entered password after phone bypass")
+                                time.sleep(4)
+                                
+                                # Handle post-login again
+                                final_url = page.url.lower()
+                                if "identity" not in final_url and "proofs" not in final_url:
+                                    logger.info(f"[{job_id}] Phone bypass + password worked!")
+                                    return True
+                                else:
+                                    # Still on verification, update body and continue to email flow
+                                    body_text = page.inner_text("body").lower()
+                                    logger.info(f"[{job_id}] After phone bypass still on verification, continuing...")
+                        except:
+                            pass
+                        break
+                except:
+                    continue
+        
         # === RESOLVE RECOVERY EMAIL ===
         # Extract masked email from page (e.g. "te*****@gmail.com" or "te*****@gm" or "ca***@cinepremiu.com")
         # MS may truncate the domain too, so we accept partial domains
