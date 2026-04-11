@@ -62,20 +62,10 @@ RECOVERY_PASSWORD = "02022013L@@@@"
 
 # Known recovery emails used for MS identity verification
 # When MS shows masked email like "te*****@gm...", we match against these
-# All dot-variants of tech34011 — Gmail delivers to same inbox, but MS may require exact match
-TECH_VARIANTS = [
-    "tech34.011@gmail.com",
+KNOWN_RECOVERY_EMAILS = [
     "tech34011@gmail.com",
-    "t.ech34011@gmail.com",
-    "te.ch34011@gmail.com",
-    "tec.h34011@gmail.com",
     "tech.34011@gmail.com",
-    "tech3.4011@gmail.com",
-    "tech340.11@gmail.com",
-    "tech3401.1@gmail.com",
-]
-
-KNOWN_RECOVERY_EMAILS = TECH_VARIANTS + [
+    "te.ch3.4011@gmail.com",
     "catchall@cinepremiu.com",
 ]
 _server_port = os.environ.get("PORT", "3000")
@@ -206,26 +196,6 @@ def _is_email_expired(msg_or_date_str, max_age_minutes: int = 15) -> bool:
         return False  # Can't parse, assume not expired
 
 
-def resolve_all_recovery_variants(masked_prefix: str, masked_domain_hint: str, job_id: str) -> list:
-    """Return ALL matching recovery email variants for trying one by one.
-    MS may require the exact dot-variant that was registered."""
-    prefix_lower = masked_prefix.lower().replace(".", "")
-    domain_hint = masked_domain_hint.lower().rstrip(".")
-    
-    candidates = []
-    for known in KNOWN_RECOVERY_EMAILS:
-        local, domain = known.lower().split("@")
-        local_nodots = local.replace(".", "")
-        if not local_nodots.startswith(prefix_lower):
-            continue
-        if domain.startswith(domain_hint) or domain_hint.startswith(domain.split(".")[0]):
-            candidates.append(known)
-    
-    if candidates:
-        logger.info(f"[{job_id}] All variants for {masked_prefix}***@{masked_domain_hint}: {candidates}")
-    return candidates
-
-
 def resolve_recovery_email(masked_prefix: str, masked_domain_hint: str, job_id: str) -> str | None:
     """Find the real recovery email from masked hint shown by MS.
     
@@ -251,8 +221,8 @@ def resolve_recovery_email(masked_prefix: str, masked_domain_hint: str, job_id: 
             candidates.append(known)
     
     if candidates:
-        # Prefer first in KNOWN_RECOVERY_EMAILS order (tech34.011 first)
-        result = candidates[0]
+        # Prefer shortest match (most likely)
+        result = sorted(candidates, key=len)[0]
         logger.info(f"[{job_id}] Resolved from known list: {masked_prefix}***@{masked_domain_hint} -> {result}")
         return result
     
@@ -311,41 +281,15 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60)
             mail.select("INBOX", readonly=True)
             cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
             
-            # Always do broad search — the recovery email shown by MS may not be
-            # the one that actually receives the code (e.g. MS shows te***@gmail.com
-            # but code goes to 14netflix@cinepremiu.com)
-            all_msg_ids = set()
-            
-            # 1. Try specific TO searches first
+            # If target_email specified, search TO that address; otherwise broad search
             if "@" in target_email:
-                local, domain = target_email.split("@", 1)
-                for search_to in [target_email]:
-                    criteria = f'(FROM "microsoft" TO "{search_to}" SINCE "{cutoff}")'
-                    st, ids = mail.search(None, criteria)
-                    if st == "OK" and ids[0]:
-                        all_msg_ids.update(ids[0].split())
-                
-                # Gmail dot-variant
-                if "gmail" in domain.lower():
-                    nodots = local.replace(".", "")
-                    if nodots != local:
-                        alt = f"{nodots}@{domain}"
-                        criteria = f'(FROM "microsoft" TO "{alt}" SINCE "{cutoff}")'
-                        st, ids = mail.search(None, criteria)
-                        if st == "OK" and ids[0]:
-                            all_msg_ids.update(ids[0].split())
-            
-            # 2. ALWAYS also do broad search (catches cases where MS sends to 
-            #    a different recovery email than what was shown on screen)
-            broad_criteria = f'(FROM "microsoft" SINCE "{cutoff}")'
-            st, ids = mail.search(None, broad_criteria)
-            if st == "OK" and ids[0]:
-                all_msg_ids.update(ids[0].split())
-            
-            if all_msg_ids:
-                # Sort by ID descending (newest first)
-                sorted_ids = sorted(all_msg_ids, key=lambda x: int(x), reverse=True)[:15]
-                for msg_id in sorted_ids:
+                search_criteria = f'(FROM "microsoft" TO "{target_email}" SINCE "{cutoff}")'
+            else:
+                search_criteria = f'(FROM "microsoft" SINCE "{cutoff}")'
+            status, msg_ids = mail.search(None, search_criteria)
+
+            if status == "OK" and msg_ids[0]:
+                for msg_id in reversed(msg_ids[0].split()[-10:]):
                     if msg_id in seen_ids:
                         continue
                     seen_ids.add(msg_id)
@@ -1034,7 +978,6 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             
             # Always try to resolve — even if username matches, could be a different recovery email
             logger.info(f"[{job_id}] Resolving masked email '{masked_prefix}***@{masked_domain}'...")
-            all_variants = resolve_all_recovery_variants(masked_prefix, masked_domain, job_id)
             resolved = resolve_recovery_email(masked_prefix, masked_domain, job_id)
             if resolved:
                 recovery = resolved
@@ -1109,250 +1052,192 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                     continue
             
             if text_input:
-                # Build list of variants to try: current recovery first, then all_variants
-                variants_to_try = [recovery]
-                for v in all_variants:
-                    if v != recovery and v not in variants_to_try:
-                        variants_to_try.append(v)
+                text_input.fill(recovery)
+                logger.info(f"[{job_id}] Typed recovery email: {recovery}")
+                time.sleep(0.5)
                 
-                logger.info(f"[{job_id}] Will try {len(variants_to_try)} recovery variant(s): {variants_to_try}")
+                # Click Send code
+                for text in ["Send code", "Enviar código", "Get code", "Obter código"]:
+                    try:
+                        btn = page.get_by_role("button", name=text)
+                        if btn.is_visible(timeout=2000):
+                            btn.click()
+                            logger.info(f"[{job_id}] Clicked: {text}")
+                            break
+                    except:
+                        continue
+                else:
+                    page.keyboard.press("Enter")
                 
-                verification_passed = False
-                for variant_idx, current_recovery in enumerate(variants_to_try):
-                    logger.info(f"[{job_id}] Trying variant {variant_idx+1}/{len(variants_to_try)}: {current_recovery}")
-                    
-                    # Clear and type recovery email
-                    text_input.fill("")
-                    time.sleep(0.2)
-                    text_input.fill(current_recovery)
-                    logger.info(f"[{job_id}] Typed recovery email: {current_recovery}")
-                    time.sleep(0.5)
-                    
-                    # Click Send code
-                    for text in ["Send code", "Enviar código", "Get code", "Obter código"]:
-                        try:
-                            btn = page.get_by_role("button", name=text)
-                            if btn.is_visible(timeout=2000):
-                                btn.click()
-                                logger.info(f"[{job_id}] Clicked: {text}")
-                                break
-                        except:
-                            continue
-                    else:
-                        page.keyboard.press("Enter")
-                    
-                    time.sleep(4)
-                    
-                    # After Send code, check if page actually advanced
-                    new_url = page.url.lower()
-                    new_body = page.inner_text("body").lower()
-                    logger.info(f"[{job_id}] After send code: URL={new_url}, body={new_body[:150]}")
-                    
-                    # Check if email was rejected by MS (doesn't match)
-                    email_rejected = False
-                    if "doesn't match" in new_body or "incorrect" in new_body or "não corresponde" in new_body:
-                        logger.warning(f"[{job_id}] Variant {current_recovery} rejected by MS, trying next...")
-                        email_rejected = True
-                    
-                    # Check if still on radio/proof page (email wrong)
-                    page_content_lower = page.content().lower()
-                    if not email_rejected and ("iproof0" in page_content_lower or "iproofemail" in page_content_lower):
-                        radio_still = page.locator("input[type=radio]").count()
-                        if radio_still > 0:
-                            logger.warning(f"[{job_id}] Page didn't advance for {current_recovery}, trying next variant...")
-                            email_rejected = True
-                    
-                    if email_rejected:
-                        # Re-find text input for next variant
-                        text_input = None
-                        for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt])",
-                                     "input[id*='iProof']", "input[id*='iOttText']",
-                                     "input[name*='iProofEmail']", "input[placeholder*='@']",
-                                     "input[placeholder*='email']"]:
-                            try:
-                                inp = page.locator(sel).first
-                                if inp.is_visible(timeout=2000):
-                                    text_input = inp
-                                    break
-                            except:
-                                continue
-                        if not text_input:
-                            logger.error(f"[{job_id}] Lost text input after rejection")
+                time.sleep(4)
+            
+            # After Send code, check if page actually advanced
+            new_url = page.url.lower()
+            new_body = page.inner_text("body").lower()
+            logger.info(f"[{job_id}] After send code: URL={new_url}, body={new_body[:150]}")
+            
+            # Check if still on radio button page (send code failed — wrong email)
+            if "iproof0" in page.content().lower() or "iproofemail" in page.content().lower():
+                # Check for error message
+                if "doesn't match" in new_body or "incorrect" in new_body or "try again" in new_body or "não corresponde" in new_body:
+                    logger.error(f"[{job_id}] Recovery email rejected by MS")
+                    return False
+                # Page didn't change — email probably wrong
+                radio_still = page.locator("input[type=radio]").count()
+                if radio_still > 0:
+                    logger.error(f"[{job_id}] Page didn't advance after Send code — recovery email likely wrong")
+                    return False
+            
+            # Check if we're past verification already
+            if "identity" not in new_url and "proofs" not in new_url and "abuse" not in new_url:
+                logger.info(f"[{job_id}] Verification passed!")
+                return True
+            
+            # Code was sent — wait for it via IMAP and enter it
+            logger.info(f"[{job_id}] Code sent! Waiting for IMAP delivery...")
+            code = get_ms_verification_code(recovery, job_id, max_wait=55)
+            if not code:
+                logger.error(f"[{job_id}] Code not received via IMAP")
+                return False
+            
+            logger.info(f"[{job_id}] Got code: {code}")
+            
+            # Wait for the code input to appear (page may need time to transition)
+            code_input = None
+            for attempt in range(5):
+                for sel in ["input[id='iOttText']", "input[id*='iOttText']", 
+                             "input[type=tel]", "input[name*='iOttText']",
+                             "input[name*='otc']", "input[id*='otc']",
+                             "input[name*='code']", "input[id*='code']",
+                             "input[aria-label*='code']", "input[aria-label*='Code']",
+                             "input[aria-label*='código']",
+                             "input[placeholder*='code']", "input[placeholder*='código']"]:
+                    try:
+                        inp = page.locator(sel).first
+                        if inp.is_visible(timeout=1000):
+                            code_input = inp
                             break
-                        continue  # Try next variant
-                    
-                    # Check if we're past verification already
-                    if "identity" not in new_url and "proofs" not in new_url and "abuse" not in new_url:
-                        logger.info(f"[{job_id}] Verification passed with {current_recovery}!")
-                        verification_passed = True
-                        break
-                    
-                    # Code was sent — wait for it via IMAP and enter it
-                    logger.info(f"[{job_id}] Code sent to {current_recovery}! Waiting for IMAP delivery...")
-                    code = get_ms_verification_code(current_recovery, job_id, max_wait=55)
-                    if not code:
-                        logger.error(f"[{job_id}] Code not received via IMAP for {current_recovery}")
-                        # Try next variant
+                    except:
                         continue
-                    
-                    logger.info(f"[{job_id}] Got code: {code}")
-                    
-                    # Wait for the code input to appear
-                    code_input = None
-                    for attempt in range(5):
-                        for sel in ["input[id='iOttText']", "input[id*='iOttText']", 
-                                     "input[type=tel]", "input[name*='iOttText']",
-                                     "input[name*='otc']", "input[id*='otc']",
-                                     "input[name*='code']", "input[id*='code']",
-                                     "input[aria-label*='code']", "input[aria-label*='Code']",
-                                     "input[aria-label*='código']",
-                                     "input[placeholder*='code']", "input[placeholder*='código']"]:
-                            try:
-                                inp = page.locator(sel).first
-                                if inp.is_visible(timeout=1000):
-                                    code_input = inp
-                                    break
-                            except:
-                                continue
-                        if code_input:
+                if code_input:
+                    break
+                logger.info(f"[{job_id}] Code input not found yet, attempt {attempt+1}/5, waiting...")
+                time.sleep(2)
+            
+            # Fallback: try any visible text/number input that is NOT the email field
+            if not code_input:
+                logger.info(f"[{job_id}] Trying fallback: any visible input field")
+                for sel in ["input[type=text]", "input[type=number]", "input[type=tel]"]:
+                    try:
+                        inputs = page.locator(sel).all()
+                        for inp in inputs:
+                            if inp.is_visible() and inp.get_attribute("value") in ["", None]:
+                                val = inp.get_attribute("id") or inp.get_attribute("name") or "unknown"
+                                logger.info(f"[{job_id}] Found empty input: {val}")
+                                code_input = inp
+                                break
+                    except:
+                        continue
+                    if code_input:
+                        break
+            
+            if not code_input:
+                # Last resort: dump page info for debugging
+                all_inputs = page.locator("input").all()
+                for inp in all_inputs:
+                    try:
+                        attrs = f"id={inp.get_attribute('id')} name={inp.get_attribute('name')} type={inp.get_attribute('type')} visible={inp.is_visible()}"
+                        logger.info(f"[{job_id}] Input on page: {attrs}")
+                    except:
+                        pass
+            
+            if code_input:
+                code_input.fill("")
+                time.sleep(0.3)
+                code_input.fill(code)
+                logger.info(f"[{job_id}] Entered code: {code}")
+                time.sleep(0.5)
+                
+                clicked_verify = False
+                for text in ["Verify", "Next", "Verificar", "Próximo", "Submit"]:
+                    try:
+                        btn = page.get_by_role("button", name=text)
+                        if btn.is_visible(timeout=2000):
+                            btn.click()
+                            logger.info(f"[{job_id}] Clicked verify button: {text}")
+                            clicked_verify = True
                             break
-                        logger.info(f"[{job_id}] Code input not found yet, attempt {attempt+1}/5, waiting...")
-                        time.sleep(2)
-                    
-                    # Fallback: try any visible text/number input
-                    if not code_input:
-                        logger.info(f"[{job_id}] Trying fallback: any visible input field")
-                        for sel in ["input[type=text]", "input[type=number]", "input[type=tel]"]:
-                            try:
-                                inputs = page.locator(sel).all()
-                                for inp in inputs:
-                                    if inp.is_visible() and inp.get_attribute("value") in ["", None]:
-                                        val = inp.get_attribute("id") or inp.get_attribute("name") or "unknown"
-                                        logger.info(f"[{job_id}] Found empty input: {val}")
-                                        code_input = inp
-                                        break
-                            except:
-                                continue
-                            if code_input:
-                                break
-                    
-                    if not code_input:
-                        all_inputs = page.locator("input").all()
-                        for inp in all_inputs:
-                            try:
-                                attrs = f"id={inp.get_attribute('id')} name={inp.get_attribute('name')} type={inp.get_attribute('type')} visible={inp.is_visible()}"
-                                logger.info(f"[{job_id}] Input on page: {attrs}")
-                            except:
-                                pass
-                        logger.error(f"[{job_id}] Code input field not found for {current_recovery}")
+                    except:
                         continue
-                    
-                    # Enter code and verify
-                    code_input.fill("")
-                    time.sleep(0.3)
-                    code_input.fill(code)
-                    logger.info(f"[{job_id}] Entered code: {code}")
-                    time.sleep(0.5)
-                    
-                    clicked_verify = False
-                    for text in ["Verify", "Next", "Verificar", "Próximo", "Submit"]:
-                        try:
-                            btn = page.get_by_role("button", name=text)
-                            if btn.is_visible(timeout=2000):
-                                btn.click()
-                                logger.info(f"[{job_id}] Clicked verify button: {text}")
-                                clicked_verify = True
-                                break
-                        except:
-                            continue
-                    
-                    if not clicked_verify:
-                        try:
-                            submit = page.locator("input[type=submit]").first
-                            if submit.is_visible(timeout=1000):
-                                submit.click()
-                                logger.info(f"[{job_id}] Clicked submit input")
-                                clicked_verify = True
-                        except:
-                            pass
-                    
-                    if not clicked_verify:
-                        page.keyboard.press("Enter")
-                        logger.info(f"[{job_id}] Pressed Enter as fallback")
-                    
-                    time.sleep(4)
-                    
-                    final_url = page.url.lower()
-                    final_body = page.inner_text("body").lower()[:300]
-                    logger.info(f"[{job_id}] After verify: url={final_url}, body={final_body[:200]}")
-                    
-                    if "identity" not in final_url and "proofs" not in final_url:
-                        logger.info(f"[{job_id}] Verification completed with {current_recovery}!")
-                        verification_passed = True
-                        break
-                    
-                    # Code was rejected — check error
-                    error_texts = ["incorrect", "wrong", "invalid", "expired", "incorreto", "inválido", "expirado", "try again", "tente novamente", "didn't work"]
+                
+                if not clicked_verify:
+                    # Try input[type=submit]
+                    try:
+                        submit = page.locator("input[type=submit]").first
+                        if submit.is_visible(timeout=1000):
+                            submit.click()
+                            logger.info(f"[{job_id}] Clicked submit input")
+                            clicked_verify = True
+                    except:
+                        pass
+                
+                if not clicked_verify:
+                    page.keyboard.press("Enter")
+                    logger.info(f"[{job_id}] Pressed Enter as fallback")
+                
+                time.sleep(4)
+                
+                final_url = page.url.lower()
+                final_body = page.inner_text("body").lower()[:200]
+                logger.info(f"[{job_id}] After verify: url={final_url}, body={final_body}")
+                
+                if "identity" not in final_url and "proofs" not in final_url:
+                    logger.info(f"[{job_id}] Verification completed after code!")
+                    return True
+                else:
+                    # Check for error messages
+                    error_texts = ["incorrect", "wrong", "invalid", "expired", "incorreto", "inválido", "expirado", "try again", "tente novamente"]
                     if any(e in final_body for e in error_texts):
-                        logger.warning(f"[{job_id}] Code rejected for {current_recovery}, trying next variant...")
-                        
-                        # Navigate back to try another variant — click "Use a different" or go back
-                        back_clicked = False
-                        for back_text in ["Use a different", "Usar outro", "I have a code", "Back", "Voltar"]:
-                            try:
-                                back_btn = page.get_by_role("button", name=back_text)
-                                if back_btn.is_visible(timeout=1500):
-                                    back_btn.click()
-                                    logger.info(f"[{job_id}] Clicked '{back_text}' to try next variant")
-                                    back_clicked = True
-                                    time.sleep(3)
-                                    break
-                            except:
-                                continue
-                        
-                        if not back_clicked:
-                            # Try link/anchor
-                            for back_text in ["use a different", "usar outro", "different verification"]:
-                                try:
-                                    link = page.locator(f"a:has-text('{back_text}')").first
-                                    if link.is_visible(timeout=1000):
-                                        link.click()
-                                        logger.info(f"[{job_id}] Clicked link '{back_text}'")
-                                        back_clicked = True
-                                        time.sleep(3)
-                                        break
-                                except:
-                                    continue
-                        
-                        if not back_clicked:
-                            # Go back in browser
-                            page.go_back()
-                            time.sleep(3)
-                        
-                        # Re-find text input for next variant
-                        text_input = None
-                        for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt])",
-                                     "input[id*='iProof']", "input[id*='iOttText']",
-                                     "input[name*='iProofEmail']", "input[placeholder*='@']",
-                                     "input[placeholder*='email']"]:
-                            try:
-                                inp = page.locator(sel).first
-                                if inp.is_visible(timeout=3000):
-                                    text_input = inp
-                                    break
-                            except:
-                                continue
-                        
-                        if not text_input:
-                            logger.error(f"[{job_id}] Cannot find email input to try next variant")
-                            break
-                        continue  # Try next variant
+                        logger.warning(f"[{job_id}] Code was rejected, retrying...")
                     else:
-                        logger.warning(f"[{job_id}] Still on verification with {current_recovery}, unknown state")
-                        break
-                
-                if not verification_passed:
-                    logger.error(f"[{job_id}] All {len(variants_to_try)} recovery variants failed")
+                        logger.warning(f"[{job_id}] Still on verification, page body: {final_body[:300]}")
+                    
+                    # Retry: maybe MS needs a second code or page reloaded
+                    # Check if there's a "Send code" or "I have a code" button again
+                    for retry_text in ["Send code", "Enviar código", "I have a code", "Eu tenho um código", "Send", "Enviar"]:
+                        try:
+                            retry_btn = page.get_by_role("button", name=retry_text)
+                            if retry_btn.is_visible(timeout=1500):
+                                retry_btn.click()
+                                logger.info(f"[{job_id}] Retry: clicked '{retry_text}', waiting for new code...")
+                                time.sleep(8)
+                                # Get new code
+                                new_code = get_ms_verification_code(job_id, recovery_email, imap_host, imap_user, imap_pass)
+                                if new_code:
+                                    code_input2 = page.locator("input[type=tel], input[type=number], input[type=text][id*='iOttText'], input[id*='iOttText']").first
+                                    if code_input2.is_visible(timeout=2000):
+                                        code_input2.fill("")
+                                        code_input2.fill(new_code)
+                                        logger.info(f"[{job_id}] Retry: entered new code: {new_code}")
+                                        time.sleep(0.5)
+                                        for vtext in ["Verify", "Next", "Verificar", "Próximo", "Submit"]:
+                                            try:
+                                                vbtn = page.get_by_role("button", name=vtext)
+                                                if vbtn.is_visible(timeout=1000):
+                                                    vbtn.click()
+                                                    break
+                                            except:
+                                                continue
+                                        time.sleep(4)
+                                        final_url2 = page.url.lower()
+                                        if "identity" not in final_url2 and "proofs" not in final_url2:
+                                            logger.info(f"[{job_id}] Retry: verification completed!")
+                                            return True
+                                break
+                        except:
+                            continue
+                    
+                    logger.error(f"[{job_id}] Still on verification page after retry")
             else:
                 logger.error(f"[{job_id}] Code input field not found")
         
@@ -1374,69 +1259,29 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                     continue
             
             if text_input:
-                # Try all variants in Flow B too
-                flowb_variants = [recovery]
-                for v in all_variants:
-                    if v != recovery and v not in flowb_variants:
-                        flowb_variants.append(v)
-                
-                flowb_passed = False
-                for fv_idx, fv_recovery in enumerate(flowb_variants):
-                    logger.info(f"[{job_id}] Flow B variant {fv_idx+1}/{len(flowb_variants)}: {fv_recovery}")
-                    text_input.fill("")
-                    time.sleep(0.2)
-                    text_input.fill(fv_recovery)
-                    logger.info(f"[{job_id}] Filled: {fv_recovery}")
-                    time.sleep(0.5)
-                    
-                    for text in ["Send code", "Enviar código", "Get code", "Obter código",
-                                  "Next", "Próximo", "Continue", "Continuar"]:
-                        try:
-                            btn = page.get_by_role("button", name=text)
-                            if btn.is_visible(timeout=1500):
-                                btn.click()
-                                logger.info(f"[{job_id}] Clicked: {text}")
-                                break
-                        except:
-                            continue
-                    else:
-                        page.keyboard.press("Enter")
-                    
-                    time.sleep(4)
-                    
-                    new_url = page.url.lower()
-                    new_body_check = page.inner_text("body").lower()
-                    
-                    if "identity" not in new_url and "proofs" not in new_url:
-                        logger.info(f"[{job_id}] Verification passed with {fv_recovery}!")
-                        flowb_passed = True
+                text_input.fill(recovery)
+                logger.info(f"[{job_id}] Filled: {recovery}")
+                time.sleep(0.5)
+            
+            for text in ["Send code", "Enviar código", "Get code", "Obter código",
+                          "Next", "Próximo", "Continue", "Continuar"]:
+                try:
+                    btn = page.get_by_role("button", name=text)
+                    if btn.is_visible(timeout=1500):
+                        btn.click()
+                        logger.info(f"[{job_id}] Clicked: {text}")
                         break
-                    
-                    # Check if rejected
-                    if "doesn't match" in new_body_check or "não corresponde" in new_body_check:
-                        logger.warning(f"[{job_id}] Flow B: {fv_recovery} rejected, trying next...")
-                        # Re-find input
-                        text_input = None
-                        for sel in ["input[type=email]:not([name=loginfmt])", "input[id*='iProof']",
-                                     "input[id*='iOttText']", "input[placeholder*='@']",
-                                     "input[type=text]:not([name=loginfmt])"]:
-                            try:
-                                inp = page.locator(sel).first
-                                if inp.is_visible(timeout=2000):
-                                    text_input = inp
-                                    break
-                            except:
-                                continue
-                        if not text_input:
-                            break
-                        continue
-                    
-                    # Code was sent, break to let the code handling below deal with it
-                    recovery = fv_recovery  # Update recovery for IMAP search
-                    break
-                
-                if flowb_passed:
-                    return True
+                except:
+                    continue
+            else:
+                page.keyboard.press("Enter")
+            
+            time.sleep(4)
+            
+            new_url = page.url.lower()
+            if "identity" not in new_url and "proofs" not in new_url:
+                logger.info(f"[{job_id}] Verification passed!")
+                return True
         
         # === Wait for code via IMAP ===
         new_body = page.inner_text("body").lower()
@@ -2899,7 +2744,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
         
         pw = sync_playwright().start()
         browser = pw.chromium.launch(
-            headless=_should_use_headless(),
+            _should_use_headless(),
             channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
                    "--disable-blink-features=AutomationControlled"]
@@ -2951,11 +2796,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
                 pass
 
 
-RECOVERY_FALLBACKS = [
-    "netflix@cinepremiu.com",
-] + [f"netflix{i}@cinepremiu.com" for i in range(1, 20)] \
-  + [f"{i}netflix@cinepremiu.com" for i in range(1, 20)] \
-  + TECH_VARIANTS
+RECOVERY_FALLBACKS = ["netflix@cinepremiu.com", "netflix1@cinepremiu.com"]
 
 
 def _get_recovery_candidates(email_addr: str, masked_prefix: str) -> list:
@@ -3009,27 +2850,9 @@ def _imap_get_new_code(min_id: int, target_to: str = "", max_wait: int = 120) ->
             cutoff = (datetime.now() - timedelta(minutes=10)).strftime("%d-%b-%Y")
             if target_to:
                 q = f'(FROM "microsoft" TO "{target_to}" SINCE "{cutoff}")'
-                # Gmail dot-variant fix: also try without dots
-                alt_to = None
-                if "@gmail" in target_to.lower():
-                    local, domain = target_to.split("@", 1)
-                    nodots = local.replace(".", "")
-                    if nodots != local:
-                        alt_to = f"{nodots}@{domain}"
             else:
                 q = f'(FROM "microsoft" SINCE "{cutoff}")'
-                alt_to = None
             status, ids = mail.search(None, q)
-            
-            # Try without dots if no results
-            if alt_to and (status != "OK" or not ids[0]):
-                q2 = f'(FROM "microsoft" TO "{alt_to}" SINCE "{cutoff}")'
-                status, ids = mail.search(None, q2)
-            
-            # Broad fallback
-            if status != "OK" or not ids[0]:
-                q3 = f'(FROM "microsoft" SINCE "{cutoff}")'
-                status, ids = mail.search(None, q3)
 
             if status == "OK" and ids[0]:
                 for mid_bytes in reversed(ids[0].split()):
@@ -3099,7 +2922,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         pw = sync_playwright().start()
         browser = pw.chromium.launch(
-            headless=_should_use_headless(), channel="chrome",
+            _should_use_headless(), channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
                   "--disable-blink-features=AutomationControlled"]
         )
@@ -3403,19 +3226,8 @@ def process_job(job_id: str, email_addr: str, service: str):
         pw = sync_playwright().start()
         
         def launch_browser():
-            # Use headed mode if Xvfb is available, headless as fallback
-            use_headless = os.environ.get("XVFB_FAILED") == "1"
-            if not use_headless:
-                # Double-check DISPLAY is actually working
-                import subprocess
-                try:
-                    subprocess.run(["xdpyinfo"], capture_output=True, timeout=3, check=True)
-                except:
-                    logger.warning(f"Xvfb DISPLAY check failed, falling back to headless")
-                    use_headless = True
-            
             b = pw.chromium.launch(
-                headless=use_headless,
+                _should_use_headless(),
                 channel="chrome",
                 args=["--no-sandbox", "--disable-dev-shm-usage",
                        "--disable-blink-features=AutomationControlled"]
