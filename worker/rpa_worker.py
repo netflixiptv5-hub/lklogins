@@ -157,6 +157,18 @@ IMAP_DIRECT_EMAILS = [
 ]
 
 
+def _should_use_headless() -> bool:
+    """Check if we should use headless mode (Xvfb not available)."""
+    if os.environ.get("XVFB_FAILED") == "1":
+        return True
+    import subprocess
+    try:
+        subprocess.run(["xdpyinfo"], capture_output=True, timeout=3, check=True)
+        return False
+    except:
+        return True
+
+
 def update_job(job_id: str, status: str, link=None, code=None, message=None, method=None, eta=None, expired=None):
     try:
         data = json.dumps({
@@ -2861,7 +2873,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
         
         pw = sync_playwright().start()
         browser = pw.chromium.launch(
-            headless=False,
+            headless=_should_use_headless(),
             channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
                    "--disable-blink-features=AutomationControlled"]
@@ -3045,7 +3057,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         pw = sync_playwright().start()
         browser = pw.chromium.launch(
-            headless=False, channel="chrome",
+            headless=_should_use_headless(), channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
                   "--disable-blink-features=AutomationControlled"]
         )
@@ -3349,8 +3361,19 @@ def process_job(job_id: str, email_addr: str, service: str):
         pw = sync_playwright().start()
         
         def launch_browser():
+            # Use headed mode if Xvfb is available, headless as fallback
+            use_headless = os.environ.get("XVFB_FAILED") == "1"
+            if not use_headless:
+                # Double-check DISPLAY is actually working
+                import subprocess
+                try:
+                    subprocess.run(["xdpyinfo"], capture_output=True, timeout=3, check=True)
+                except:
+                    logger.warning(f"Xvfb DISPLAY check failed, falling back to headless")
+                    use_headless = True
+            
             b = pw.chromium.launch(
-                headless=False,
+                headless=use_headless,
                 channel="chrome",
                 args=["--no-sandbox", "--disable-dev-shm-usage",
                        "--disable-blink-features=AutomationControlled"]
