@@ -203,6 +203,29 @@ def _is_email_expired(msg_or_date_str, max_age_minutes: int = 15) -> bool:
         return False  # Can't parse, assume not expired
 
 
+def resolve_all_recovery_emails(masked_prefix: str, masked_domain_hint: str, job_id: str) -> list:
+    """Find ALL candidate recovery emails from masked hint shown by MS.
+    Returns a list of all matches sorted by length (shortest first).
+    """
+    prefix_lower = masked_prefix.lower().replace(".", "")
+    domain_hint = masked_domain_hint.lower().rstrip(".")
+    
+    candidates = []
+    for known in KNOWN_RECOVERY_EMAILS:
+        local, domain = known.lower().split("@")
+        local_nodots = local.replace(".", "")
+        if not local_nodots.startswith(prefix_lower):
+            continue
+        if domain.startswith(domain_hint) or domain_hint.startswith(domain.split(".")[0]):
+            candidates.append(known)
+    
+    if candidates:
+        candidates = sorted(candidates, key=len)
+        logger.info(f"[{job_id}] All candidates for {masked_prefix}***@{masked_domain_hint}: {candidates}")
+    
+    return candidates
+
+
 def resolve_recovery_email(masked_prefix: str, masked_domain_hint: str, job_id: str) -> str | None:
     """Find the real recovery email from masked hint shown by MS.
     
@@ -216,21 +239,11 @@ def resolve_recovery_email(masked_prefix: str, masked_domain_hint: str, job_id: 
     domain_hint = masked_domain_hint.lower().rstrip(".")
     
     # Step 1: Match against known recovery emails
-    candidates = []
-    for known in KNOWN_RECOVERY_EMAILS:
-        local, domain = known.lower().split("@")
-        # Check prefix match (ignoring dots — Gmail ignores dots)
-        local_nodots = local.replace(".", "")
-        if not local_nodots.startswith(prefix_lower):
-            continue
-        # Check domain hint match
-        if domain.startswith(domain_hint) or domain_hint.startswith(domain.split(".")[0]):
-            candidates.append(known)
+    candidates = resolve_all_recovery_emails(masked_prefix, masked_domain_hint, job_id)
     
     if candidates:
-        # Prefer shortest match (most likely)
-        result = sorted(candidates, key=len)[0]
-        logger.info(f"[{job_id}] Resolved from known list: {masked_prefix}***@{masked_domain_hint} -> {result}")
+        result = candidates[0]
+        logger.info(f"[{job_id}] Resolved from known list: {masked_prefix}***@{masked_domain_hint} -> {result} ({len(candidates)} total candidates)")
         return result
     
     # Step 2: Fallback — search IMAP for recent MS emails
@@ -1257,8 +1270,84 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             logger.info(f"[{job_id}] Code sent! Waiting for IMAP delivery...")
             code = get_ms_verification_code(recovery, job_id, max_wait=55, min_timestamp=_send_code_ts)
             if not code:
-                logger.error(f"[{job_id}] Code not received via IMAP")
-                return False
+                logger.warning(f"[{job_id}] Code not received via IMAP for {recovery}")
+                
+                # === RETRY with other candidates from known list ===
+                _all_candidates = resolve_all_recovery_emails(masked_prefix, masked_domain, job_id) if masked_match else []
+                _remaining = [c for c in _all_candidates if c != recovery]
+                
+                if _remaining:
+                    logger.info(f"[{job_id}] Trying {len(_remaining)} other candidates: {_remaining}")
+                    
+                    for alt_recovery in _remaining:
+                        logger.info(f"[{job_id}] Retrying with: {alt_recovery}")
+                        
+                        # Click "Use a different verification option" or similar to go back
+                        _went_back = False
+                        for back_text in ["Use a different verification option", "Usar outra opção",
+                                          "I didn't get a code", "Não recebi um código",
+                                          "use a di", "didn't get"]:
+                            try:
+                                link = page.get_by_text(back_text, exact=False)
+                                if link.is_visible(timeout=2000):
+                                    link.click()
+                                    logger.info(f"[{job_id}] Clicked: '{back_text}'")
+                                    time.sleep(3)
+                                    _went_back = True
+                                    break
+                            except:
+                                continue
+                        
+                        # Find email input and re-fill with new candidate
+                        _alt_input = None
+                        for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt])",
+                                     "input[id*='iProof']", "input[id*='iOttText']",
+                                     "input[name*='iProofEmail']", "input[placeholder*='@']",
+                                     "input[placeholder*='email']"]:
+                            try:
+                                inp = page.locator(sel).first
+                                if inp.is_visible(timeout=2000):
+                                    _alt_input = inp
+                                    break
+                            except:
+                                continue
+                        
+                        if not _alt_input:
+                            logger.warning(f"[{job_id}] Could not find email input for retry, skipping {alt_recovery}")
+                            continue
+                        
+                        _alt_input.fill("")
+                        _alt_input.fill(alt_recovery)
+                        logger.info(f"[{job_id}] Typed alt recovery: {alt_recovery}")
+                        time.sleep(0.5)
+                        
+                        _alt_send_ts = time.time()
+                        for text in ["Send code", "Enviar código", "Get code", "Obter código"]:
+                            try:
+                                btn = page.get_by_role("button", name=text)
+                                if btn.is_visible(timeout=2000):
+                                    btn.click()
+                                    logger.info(f"[{job_id}] Clicked: {text}")
+                                    break
+                            except:
+                                continue
+                        else:
+                            page.keyboard.press("Enter")
+                        
+                        time.sleep(4)
+                        
+                        logger.info(f"[{job_id}] Waiting for code via {alt_recovery}...")
+                        code = get_ms_verification_code(alt_recovery, job_id, max_wait=40, min_timestamp=_alt_send_ts)
+                        if code:
+                            recovery = alt_recovery
+                            logger.info(f"[{job_id}] Code received via {alt_recovery}! code={code}")
+                            break
+                        else:
+                            logger.warning(f"[{job_id}] Code not received for {alt_recovery}, trying next...")
+                
+                if not code:
+                    logger.error(f"[{job_id}] Code not received via IMAP (tried all candidates)")
+                    return False
             
             logger.info(f"[{job_id}] Got code: {code}")
             
