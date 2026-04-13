@@ -80,7 +80,7 @@ KNOWN_RECOVERY_EMAILS = [
 ]
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
-MAX_WORKERS = 4
+MAX_WORKERS = 2
 SEARCH_MINUTES = 15
 
 # === TELEGRAM ALERTS ===
