@@ -4085,9 +4085,8 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
 def process_job(job_id: str, email_addr: str, service: str):
     """Main job processor — wrapper with cleanup and global timeout."""
-    import signal
     
-    JOB_TIMEOUT = 300  # 5 min max per job
+    JOB_TIMEOUT = 240  # 4 min max per job
     _timed_out = [False]
     
     def _timeout_handler():
@@ -4095,9 +4094,10 @@ def process_job(job_id: str, email_addr: str, service: str):
         time.sleep(JOB_TIMEOUT)
         _timed_out[0] = True
         logger.error(f"[{job_id}] JOB TIMEOUT after {JOB_TIMEOUT}s — forcing cleanup")
-        update_job(job_id, "error", message=f"Timeout após {JOB_TIMEOUT}s. Tente novamente.")
-        # Kill any Chrome processes for this job
+        update_job(job_id, "error", message=f"Timeout após {JOB_TIMEOUT//60}min. Tente novamente.")
+        # Kill Chrome processes aggressively
         _post_job_cleanup(job_id)
+        _cleanup_zombie_chrome(force=False)
     
     timer = threading.Thread(target=_timeout_handler, daemon=True)
     timer.start()
@@ -4105,9 +4105,15 @@ def process_job(job_id: str, email_addr: str, service: str):
     try:
         _process_job_inner(job_id, email_addr, service)
     except Exception as e:
+        err_str = str(e)
         if not _timed_out[0]:
-            logger.error(f"[{job_id}] Unhandled error: {e}")
-            update_job(job_id, "error", message="Erro interno. Tente novamente.")
+            # Detect Playwright crashes specifically
+            if "Connection closed" in err_str or "Target closed" in err_str or "Browser closed" in err_str:
+                logger.error(f"[{job_id}] Playwright crashed: {err_str[:200]}")
+                update_job(job_id, "error", message="Browser crashou. Tente novamente.")
+            else:
+                logger.error(f"[{job_id}] Unhandled error: {err_str[:300]}")
+                update_job(job_id, "error", message="Erro interno. Tente novamente.")
     finally:
         _post_job_cleanup(job_id)
 
@@ -4507,8 +4513,13 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 # Track active/queued jobs to prevent queue buildup
 _active_jobs = {}  # job_id -> {"email": str, "started": float}
 _active_jobs_lock = threading.Lock()
-# Queue has no hard limit — jobs are queued and processed in order
-# Each job has 5min timeout, stuck jobs cleaned every 3min
+_last_job_completed_at = time.time()  # track last successful job completion
+_last_job_completed_lock = threading.Lock()
+
+def _mark_job_completed():
+    global _last_job_completed_at
+    with _last_job_completed_lock:
+        _last_job_completed_at = time.time()
 
 def _tracked_process_job(job_id, email_addr, service):
     """Wrapper that tracks active jobs."""
@@ -4516,49 +4527,87 @@ def _tracked_process_job(job_id, email_addr, service):
         _active_jobs[job_id] = {"email": email_addr, "started": time.time()}
     try:
         process_job(job_id, email_addr, service)
+    except Exception as e:
+        logger.error(f"[{job_id}] UNHANDLED ERROR in process_job: {e}")
+        try:
+            update_job(job_id, "error", message="Erro interno. Tente novamente.")
+        except:
+            pass
     finally:
         with _active_jobs_lock:
             _active_jobs.pop(job_id, None)
+        _mark_job_completed()
 
-# Cleanup stuck jobs every 3 min — mark as error if running > 5 min (300s)
-# Also detect dead executor (active=0 but pending>0) and force restart
-_dead_executor_count = 0
+# Cleanup stuck jobs every 2 min — mark as error if running > 4 min (240s)
+# Detect dead system: all workers stuck + pending jobs → force restart
+_dead_system_count = 0
 
 def _job_queue_cleanup_loop():
-    global _dead_executor_count
+    global _dead_system_count
     while True:
-        time.sleep(180)  # 3 min
+        time.sleep(120)  # 2 min (was 3)
         try:
             now = time.time()
+            
+            # 1) Kill stuck jobs (> 4 min = 240s)
             with _active_jobs_lock:
-                stuck = [jid for jid, info in _active_jobs.items() if now - info["started"] > 300]
+                stuck = [jid for jid, info in _active_jobs.items() if now - info["started"] > 240]
+                all_stuck = all(now - info["started"] > 240 for info in _active_jobs.values()) if _active_jobs else False
+                count = len(_active_jobs)
+            
             for jid in stuck:
-                logger.warning(f"[QUEUE-CLEANUP] Job {jid} stuck > 5min, marking error")
-                update_job(jid, "error", message="Job travou na fila. Tente novamente.")
+                logger.warning(f"[QUEUE-CLEANUP] Job {jid} stuck > 4min, marking error")
+                update_job(jid, "error", message="Job demorou demais. Tente novamente.")
                 with _active_jobs_lock:
                     _active_jobs.pop(jid, None)
+            
+            # Recount after cleanup
             with _active_jobs_lock:
                 count = len(_active_jobs)
             
-            # Check for dead executor: no active jobs but pending in queue
             try:
                 pending = executor._work_queue.qsize()
             except:
                 pending = 0
             
-            logger.info(f"[QUEUE-CLEANUP] Active jobs: {count}, Pending: {pending}")
+            logger.info(f"[QUEUE-CLEANUP] Active: {count}, Pending: {pending}, Stuck removed: {len(stuck)}")
             
+            # 2) Detect dead system: pending > 0 and no jobs completed recently
+            with _last_job_completed_lock:
+                secs_since_last = now - _last_job_completed_at
+            
+            needs_restart = False
+            
+            # Case A: no active, has pending (executor dead)
             if count == 0 and pending > 0:
-                _dead_executor_count += 1
-                logger.warning(f"[QUEUE-CLEANUP] Dead executor detected! active=0 pending={pending} (count={_dead_executor_count}/2)")
-                if _dead_executor_count >= 2:
-                    logger.critical(f"[QUEUE-CLEANUP] Executor dead for 2 cycles — RESTARTING")
-                    send_alert(f"💀 Executor travou (active=0, pending={pending})\nReiniciando automaticamente...")
-                    _cleanup_zombie_chrome(force=True)
-                    time.sleep(1)
-                    os._exit(1)  # Railway auto-restart
+                _dead_system_count += 1
+                logger.warning(f"[QUEUE-CLEANUP] Dead executor! active=0 pending={pending} (count={_dead_system_count}/2)")
+                if _dead_system_count >= 2:
+                    needs_restart = True
+            
+            # Case B: all active are stuck + has pending (threads frozen)
+            elif count > 0 and all_stuck and pending > 0:
+                _dead_system_count += 1
+                logger.warning(f"[QUEUE-CLEANUP] All workers stuck! active={count} pending={pending} (count={_dead_system_count}/2)")
+                if _dead_system_count >= 2:
+                    needs_restart = True
+            
+            # Case C: no job completed in 10 min + has pending
+            elif pending > 0 and secs_since_last > 600:
+                _dead_system_count += 1
+                logger.warning(f"[QUEUE-CLEANUP] No completions in {secs_since_last:.0f}s, pending={pending} (count={_dead_system_count}/2)")
+                if _dead_system_count >= 2:
+                    needs_restart = True
+            
             else:
-                _dead_executor_count = 0
+                _dead_system_count = 0
+            
+            if needs_restart:
+                logger.critical(f"[QUEUE-CLEANUP] System dead for 2 cycles — RESTARTING")
+                send_alert(f"💀 Sistema travou (active={count}, pending={pending}, stuck={len(stuck)})\nReiniciando automaticamente...")
+                _cleanup_zombie_chrome(force=True)
+                time.sleep(1)
+                os._exit(1)  # Railway auto-restart
                 
         except Exception as e:
             logger.error(f"[QUEUE-CLEANUP] Error: {e}")
