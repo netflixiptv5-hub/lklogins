@@ -3238,7 +3238,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
                    "--disable-background-networking",
                    "--disable-default-apps", "--disable-sync",
                    "--disable-translate", "--no-first-run",
-                   "--single-process", "--js-flags=--max-old-space-size=128"]
+                   "--js-flags=--max-old-space-size=256"]
         )
         ctx = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -3579,7 +3579,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
                   "--disable-background-networking",
                   "--disable-default-apps", "--disable-sync",
                   "--disable-translate", "--no-first-run",
-                  "--single-process", "--js-flags=--max-old-space-size=128"]
+                  "--js-flags=--max-old-space-size=256"]
         )
         ctx = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -3911,7 +3911,7 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                        "--disable-background-networking",
                        "--disable-default-apps", "--disable-sync",
                        "--disable-translate", "--no-first-run",
-                       "--single-process", "--js-flags=--max-old-space-size=128"]
+                       "--js-flags=--max-old-space-size=256"]
             )
             ctx = b.new_context(
                 viewport={"width": 1920, "height": 1080},
