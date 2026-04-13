@@ -4489,7 +4489,8 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 # Track active/queued jobs to prevent queue buildup
 _active_jobs = {}  # job_id -> {"email": str, "started": float}
 _active_jobs_lock = threading.Lock()
-MAX_QUEUE_SIZE = 4  # Max jobs allowed (2 running + 2 queued)
+# Queue has no hard limit — jobs are queued and processed in order
+# Each job has 5min timeout, stuck jobs cleaned every 5min
 
 def _tracked_process_job(job_id, email_addr, service):
     """Wrapper that tracks active jobs."""
@@ -4534,24 +4535,19 @@ class JobHandler(BaseHTTPRequestHandler):
                 service = body.get("service")
 
                 if job_id and email_addr and service:
-                    # Check queue size — reject if too many
+                    # Log queue status (never reject — just queue it)
                     with _active_jobs_lock:
                         tracked_size = len(_active_jobs)
-                    # Also check executor's internal pending queue
                     try:
                         pending_in_executor = executor._work_queue.qsize()
                     except:
                         pending_in_executor = 0
-                    queue_size = tracked_size + pending_in_executor
-                    logger.info(f"[{job_id}] Queue: active={tracked_size}, pending={pending_in_executor}, total={queue_size}")
-                    if queue_size >= MAX_QUEUE_SIZE:
-                        logger.warning(f"[{job_id}] Queue full ({queue_size}/{MAX_QUEUE_SIZE}), rejecting")
-                        update_job(job_id, "error", message="Servidor ocupado. Aguarde 1 minuto e tente novamente.")
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"ok": True, "queued": False, "reason": "queue_full"}).encode())
-                        return
+                    logger.info(f"[{job_id}] Queue: active={tracked_size}, pending={pending_in_executor}")
+                    
+                    # If queue is long, tell user to wait (but still process)
+                    if tracked_size + pending_in_executor >= 4:
+                        update_job(job_id, "connecting", eta=120,
+                            message="Servidor com fila. Seu pedido está na fila, aguarde...")
                     
                     executor.submit(_tracked_process_job, job_id, email_addr, service)
                     self.send_response(200)
