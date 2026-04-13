@@ -920,31 +920,58 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
         
         # Step 1: Click "Outras maneiras de entrar" / "Other ways to sign in"
         _found_alt = False
-        for text in ["Outras maneiras de entrar", "Other ways to sign in", 
-                      "Sign in another way", "Outras formas de entrar",
-                      "I can't use this right now", "Não posso usar isso agora"]:
+        
+        # CSS selectors first
+        _alt_css = [
+            'a:has-text("Outras maneiras")',
+            'a:has-text("Other ways")',
+            'span[role="button"]:has-text("Outras maneiras")',
+            'span[role="button"]:has-text("Other ways")',
+            '.fui-Link:has-text("Outras")',
+            '.fui-Link:has-text("Other ways")',
+            '#iShowSkip',
+            '#iCancel',
+        ]
+        for sel in _alt_css:
             try:
-                link = page.get_by_text(text, exact=False)
-                if link.is_visible(timeout=2000):
-                    link.click()
-                    logger.info(f"[{job_id}] Clicked '{text}'")
+                el = page.locator(sel).first
+                if el.is_visible(timeout=1500):
+                    el.click()
+                    logger.info(f"[{job_id}] Clicked alt via CSS: {sel}")
                     time.sleep(3)
                     _found_alt = True
                     break
             except:
                 continue
         
+        # Text matching fallback
         if not _found_alt:
-            logger.warning(f"[{job_id}] Could not find 'Outras maneiras de entrar', trying links...")
-            # Try any link/button that might lead to alternatives
+            for text in ["Outras maneiras de entrar", "Other ways to sign in", 
+                          "Sign in another way", "Outras formas de entrar",
+                          "I can't use this right now", "Não posso usar isso agora",
+                          "Outras maneiras", "Other ways"]:
+                try:
+                    link = page.get_by_text(text, exact=False)
+                    if link.is_visible(timeout=1500):
+                        link.click()
+                        logger.info(f"[{job_id}] Clicked alt via text: '{text}'")
+                        time.sleep(3)
+                        _found_alt = True
+                        break
+                except:
+                    continue
+        
+        # Brute force scan
+        if not _found_alt:
+            logger.warning(f"[{job_id}] Alt link not found, scanning all elements...")
             try:
-                links = page.locator("a, button").all()
-                for l in links:
+                all_els = page.locator('a, button, span[role="button"], [role="link"], .fui-Link, span[tabindex]').all()
+                for el in all_els:
                     try:
-                        lt = l.inner_text().lower().strip()
-                        if "outra" in lt or "other" in lt or "different" in lt:
-                            l.click()
-                            logger.info(f"[{job_id}] Clicked alt link: '{lt}'")
+                        et = el.inner_text().lower().strip()
+                        if ("outra" in et or "other" in et or "different" in et or "maneira" in et) and len(et) < 60:
+                            el.click()
+                            logger.info(f"[{job_id}] Clicked alt element (brute): '{et}'")
                             time.sleep(3)
                             _found_alt = True
                             break
@@ -960,17 +987,76 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
     
     # === TRY "Use your password" / "Use sua senha" ===
     # Works both for direct prompt AND after phone bypass above
-    for text in ["Use your password", "Use sua senha", "Usar senha", "Use a password",
-                 "Sign in with a password", "Entrar com senha"]:
+    # Multiple strategies: CSS selectors first (most reliable), then text matching
+    _clicked_pwd_link = False
+    
+    # Strategy 1: CSS selectors for known MS login elements
+    _css_selectors = [
+        'span[role="button"]:has-text("senha")',
+        'span[role="button"]:has-text("password")',
+        '.fui-Link:has-text("senha")',
+        '.fui-Link:has-text("password")',
+        'a:has-text("Use sua senha")',
+        'a:has-text("Use your password")',
+        'button:has-text("Use sua senha")',
+        'button:has-text("Use your password")',
+        '[data-testid="usePwdLink"]',
+        '#iShowSkip',
+    ]
+    for sel in _css_selectors:
         try:
-            link = page.get_by_text(text, exact=False)
-            if link.is_visible(timeout=1500):
-                link.click()
-                logger.info(f"[{job_id}] Clicked '{text}'")
+            el = page.locator(sel).first
+            if el.is_visible(timeout=1000):
+                el.click()
+                logger.info(f"[{job_id}] Clicked password link via CSS: {sel}")
+                _clicked_pwd_link = True
                 time.sleep(2)
                 break
         except:
             continue
+    
+    # Strategy 2: Text matching with get_by_text (fallback)
+    if not _clicked_pwd_link:
+        for text in ["Use sua senha", "Use your password", "Usar senha", "Use a password",
+                     "Sign in with a password", "Entrar com senha", "Usar a senha",
+                     "senha", "password"]:
+            try:
+                link = page.get_by_text(text, exact=False)
+                if link.is_visible(timeout=1000):
+                    link.click()
+                    logger.info(f"[{job_id}] Clicked password link via text: '{text}'")
+                    _clicked_pwd_link = True
+                    time.sleep(2)
+                    break
+            except:
+                continue
+    
+    # Strategy 3: Brute force — scan ALL clickable elements for "senha" or "password"
+    if not _clicked_pwd_link:
+        logger.warning(f"[{job_id}] CSS+text failed, scanning all clickable elements...")
+        try:
+            all_clickable = page.locator('a, button, span[role="button"], [role="link"], .fui-Link, span[tabindex]').all()
+            for el in all_clickable:
+                try:
+                    el_text = el.inner_text().lower().strip()
+                    if ("senha" in el_text or "password" in el_text) and len(el_text) < 50:
+                        el.click()
+                        logger.info(f"[{job_id}] Clicked password element (brute): '{el_text}'")
+                        _clicked_pwd_link = True
+                        time.sleep(2)
+                        break
+                except:
+                    continue
+        except:
+            pass
+    
+    if not _clicked_pwd_link:
+        # Log page state for debugging
+        try:
+            body_debug = page.inner_text("body")[:500]
+            logger.warning(f"[{job_id}] No password link found. Page: {body_debug}")
+        except:
+            pass
     
     # Wait for password field
     try:
