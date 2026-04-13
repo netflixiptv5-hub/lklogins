@@ -1368,15 +1368,27 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             # MS can show phone + email together. Don't give up — continue to Flow A below.
             if not _phone_bypassed:
                 body_text = page.inner_text("body").lower()
-                # Check if page has email options (radio buttons with @cinepremiu, @gmail, etc.)
-                has_email_option = any(kw in body_text for kw in [
-                    "@cinepremiu", "@gmail", "email", "e-mail",
-                    "send a code to", "enviar código para", "enviar um código",
+                # Check if page has REAL email options (with @ in radio text, not just the word "email")
+                has_email_with_at = any(kw in body_text for kw in [
+                    "@cinepremiu", "@gmail", "@hotmail", "@outlook", "@yahoo",
+                    "send a code to your email", "enviar código para seu email",
                 ])
-                has_radio_buttons = page.locator("input[type=radio]").count() > 0
                 
-                if has_email_option or has_radio_buttons:
-                    logger.info(f"[{job_id}] Phone detected but ALSO has email options (radios={has_radio_buttons}), continuing to Flow A...")
+                # Check radio buttons for actual email addresses
+                has_email_radio = False
+                all_radios = page.locator("input[type=radio]").all()
+                for radio in all_radios:
+                    try:
+                        parent_text = radio.evaluate("el => { let p = el.closest('div, label, li, tr'); return p ? p.textContent : ''; }") or ""
+                        if "@" in parent_text and "don't have" not in parent_text.lower() and "não tenho" not in parent_text.lower():
+                            has_email_radio = True
+                            logger.info(f"[{job_id}] Found email radio: '{parent_text.strip()[:60]}'")
+                            break
+                    except:
+                        continue
+                
+                if has_email_with_at or has_email_radio:
+                    logger.info(f"[{job_id}] Phone detected but ALSO has email options (email_radio={has_email_radio}), continuing to Flow A...")
                     _phone_bypassed = True  # let it continue
                 else:
                     # Try one more thing: click "I have a code" or "Sign in another way" to reveal email options
@@ -1521,14 +1533,20 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             logger.info(f"[{job_id}] After radio Next: {new_body[:200]}")
             
             # Check if it now wants us to type the email
+            # IMPORTANT: exclude radio buttons — iProof0 is a radio, not a text input
             text_input = None
-            for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt])",
-                         "input[id*='iProof']", "input[id*='iOttText']",
+            for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt]):not([type=radio])",
+                         "input[id*='iProofEmail']", "input[id*='iOttText']",
                          "input[name*='iProofEmail']", "input[placeholder*='@']",
                          "input[placeholder*='email']"]:
                 try:
                     inp = page.locator(sel).first
                     if inp.is_visible(timeout=2000):
+                        # Double-check it's NOT a radio button
+                        inp_type = inp.get_attribute("type") or ""
+                        if inp_type.lower() == "radio":
+                            logger.debug(f"[{job_id}] Skipping radio button: {sel}")
+                            continue
                         text_input = inp
                         logger.info(f"[{job_id}] Found text input: {sel}")
                         break
