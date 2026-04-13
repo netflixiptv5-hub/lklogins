@@ -1236,7 +1236,45 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                 except:
                     continue
             
-            # Strategy 2: Try "I don't have these any more" to reach email recovery
+            # Strategy 2: Try "I have a code" — may open email/TOTP options
+            if not _phone_bypassed:
+                for text in ["I have a code", "Tenho um código", "Eu tenho um código",
+                             "Use a different verification option", "Usar outra opção de verificação"]:
+                    try:
+                        link = page.get_by_text(text, exact=False)
+                        if link.is_visible(timeout=2000):
+                            link.click()
+                            logger.info(f"[{job_id}] Clicked '{text}'")
+                            time.sleep(4)
+                            
+                            new_body = page.inner_text("body").lower()
+                            new_url = page.url.lower()
+                            logger.info(f"[{job_id}] After '{text}': {new_url} | {new_body[:300]}")
+                            
+                            # Check if we got an email input or a code input
+                            has_text_input = False
+                            for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt])",
+                                        "input[id*='iOttText']", "input[placeholder*='@']",
+                                        "input[placeholder*='code']", "input[placeholder*='código']"]:
+                                try:
+                                    inp = page.locator(sel).first
+                                    if inp.is_visible(timeout=1500):
+                                        inp_type = inp.get_attribute("type") or "text"
+                                        if inp_type != "radio":
+                                            has_text_input = True
+                                            break
+                                except:
+                                    continue
+                            
+                            if has_text_input or "@" in new_body or "cinepremiu" in new_body:
+                                body_text = new_body
+                                _phone_bypassed = True
+                                logger.info(f"[{job_id}] Got verification options after 'I have a code'!")
+                            break
+                    except:
+                        continue
+            
+            # Strategy 3: Try "I don't have these any more" to reach email recovery
             if not _phone_bypassed:
                 for text in ["I don't have these any more", "Não tenho mais acesso a esses",
                              "Não tenho acesso", "I can't use any of these",
@@ -1252,13 +1290,12 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                             new_url = page.url.lower()
                             logger.info(f"[{job_id}] After 'no access': {new_url} | {new_body[:200]}")
                             
-                            # Check if we now have email option or password option
-                            if "email" in new_body or "@" in new_body or "password" in new_body or "senha" in new_body:
+                            # Only count as bypassed if there's a REAL email option (@ with domain we know)
+                            if "@cinepremiu" in new_body or "@gmail" in new_body or "password" in new_body or "senha" in new_body:
                                 body_text = new_body
                                 _phone_bypassed = True
                                 logger.info(f"[{job_id}] Got alternative verification options!")
                             elif "recover" in new_url or "resetpw" in new_url or "acsr" in new_url:
-                                # MS sent us to account recovery - can't help here
                                 logger.warning(f"[{job_id}] Redirected to account recovery, can't bypass")
                             break
                     except:
@@ -1657,8 +1694,13 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                 try:
                     inp = page.locator(sel).first
                     if inp.is_visible(timeout=2000):
+                        # IMPORTANT: skip radio buttons — they can't be filled
+                        inp_type = inp.get_attribute("type") or "text"
+                        if inp_type == "radio":
+                            logger.warning(f"[{job_id}] Skipping radio input: {sel}")
+                            continue
                         text_input = inp
-                        logger.info(f"[{job_id}] Found input: {sel}")
+                        logger.info(f"[{job_id}] Found input: {sel} (type={inp_type})")
                         break
                 except:
                     continue
