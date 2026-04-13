@@ -3974,8 +3974,8 @@ def process_job(job_id: str, email_addr: str, service: str):
             except:
                 pass
 
-    # === LAST RESORT: CODE LOGIN (só se Playwright falhou por senha/erro) ===
-    if _playwright_password_fail and not _api_abuse:
+    # === LAST RESORT: CODE LOGIN (se Playwright falhou por qualquer motivo) ===
+    if _playwright_password_fail:
         try:
             logger.info(f"[{job_id}] Tentando code login como último recurso...")
             if process_job_code_login(job_id, email_addr, service):
