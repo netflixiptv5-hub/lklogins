@@ -131,54 +131,58 @@ def _count_chrome_procs():
     except:
         return 0
 
+def _kill_all_chrome():
+    """Kill ALL chrome/playwright processes. No mercy."""
+    for pattern in ["chrome", "chromium", "headless_shell", "playwright.*run-driver"]:
+        try:
+            subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True, timeout=5)
+        except:
+            pass
+
 def _cleanup_zombie_chrome(force=False):
-    """Kill orphan chrome/chromium processes. force=True kills ALL chrome procs."""
+    """Kill orphan chrome/chromium processes. Always aggressive — no reason to keep old procs."""
     try:
         count = _count_chrome_procs()
         mem_mb = _get_memory_mb()
-        logger.info(f"[CLEANUP] Chrome procs: {count}, RSS: {mem_mb:.0f} MB")
         
-        # Kill if too many procs OR memory too high OR forced
-        if force or count > 8 or mem_mb > 400:
-            logger.warning(f"[CLEANUP] Aggressive kill — procs={count}, mem={mem_mb:.0f}MB, force={force}")
-            # Kill ALL chrome-related processes
-            for pattern in ["chrome", "chromium", "headless_shell"]:
-                subprocess.run(
-                    ["pkill", "-9", "-f", pattern],
-                    capture_output=True, timeout=5
-                )
-            # Also kill zombie playwright node processes
-            subprocess.run(
-                ["pkill", "-9", "-f", "playwright.*run-driver"],
-                capture_output=True, timeout=5
-            )
+        # Always kill if ANY chrome procs exist and no active jobs using browser
+        with _active_jobs_lock:
+            active_count = len(_active_jobs)
+        
+        if force or count > 4 or mem_mb > 300:
+            logger.warning(f"[CLEANUP] Killing chrome — procs={count}, mem={mem_mb:.0f}MB, active_jobs={active_count}, force={force}")
+            _kill_all_chrome()
             time.sleep(0.5)
-            
             after_count = _count_chrome_procs()
             after_mem = _get_memory_mb()
             logger.info(f"[CLEANUP] After kill — procs: {after_count}, RSS: {after_mem:.0f} MB")
-        elif count > 3:
-            # Moderate cleanup — only headless
-            logger.info(f"[CLEANUP] Moderate kill — {count} chrome procs")
-            subprocess.run(
-                ["pkill", "-9", "-f", "chrome.*--headless"],
-                capture_output=True, timeout=5
-            )
+        elif count > 0 and active_count == 0:
+            # No active jobs but chrome still running = orphans
+            logger.info(f"[CLEANUP] No active jobs but {count} chrome procs — killing orphans")
+            _kill_all_chrome()
+        elif count > 0:
+            logger.info(f"[CLEANUP] Chrome procs: {count}, RSS: {mem_mb:.0f} MB (active_jobs={active_count})")
     except Exception as e:
         logger.debug(f"[CLEANUP] Chrome cleanup error: {e}")
 
 def _post_job_cleanup(job_id: str):
     """Run after EVERY job to free memory and kill leaked processes."""
     try:
-        # Force garbage collection every single job
         gc.collect()
-        gc.collect()  # second pass catches cyclic refs
-        logger.debug(f"[{job_id}] gc.collect() done")
+        gc.collect()
     except:
         pass
     
-    # Kill zombie chromes after EVERY job (not every 5)
-    _cleanup_zombie_chrome()
+    # Check if this was the last active job — if so, kill ALL chrome
+    with _active_jobs_lock:
+        remaining = len(_active_jobs)
+    if remaining == 0:
+        chrome_count = _count_chrome_procs()
+        if chrome_count > 0:
+            logger.info(f"[{job_id}] Last job done — killing {chrome_count} orphan chrome procs")
+            _kill_all_chrome()
+    else:
+        _cleanup_zombie_chrome()
     
     # Check if memory is critical — if so, force restart
     mem_mb = _get_memory_mb()
