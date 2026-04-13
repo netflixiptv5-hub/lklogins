@@ -89,65 +89,128 @@ _active_pws_lock = threading.Lock()
 _jobs_since_cleanup = 0
 _jobs_lock = threading.Lock()
 
-def _cleanup_zombie_chrome():
-    """Kill orphan chrome/chromium processes not tracked by active Playwright instances."""
+def _get_memory_mb():
+    """Get current RSS memory usage in MB."""
     try:
-        # Count chrome processes
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024  # kB -> MB
+    except:
+        pass
+    try:
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    except:
+        return 0
+
+def _count_chrome_procs():
+    """Count running chrome/chromium processes."""
+    try:
         result = subprocess.run(
-            ["pgrep", "-c", "-f", "chrome"],
+            ["pgrep", "-c", "-f", "chrom"],
             capture_output=True, text=True, timeout=5
         )
-        count = int(result.stdout.strip()) if result.stdout.strip() else 0
-        logger.info(f"[CLEANUP] Chrome processes: {count}")
+        return int(result.stdout.strip()) if result.stdout.strip() else 0
+    except:
+        return 0
+
+def _cleanup_zombie_chrome(force=False):
+    """Kill orphan chrome/chromium processes. force=True kills ALL chrome procs."""
+    try:
+        count = _count_chrome_procs()
+        mem_mb = _get_memory_mb()
+        logger.info(f"[CLEANUP] Chrome procs: {count}, RSS: {mem_mb:.0f} MB")
         
-        if count > 20:  # too many — kill all orphans
-            logger.warning(f"[CLEANUP] {count} chrome procs detected, killing orphans...")
+        # Kill if too many procs OR memory too high OR forced
+        if force or count > 8 or mem_mb > 400:
+            logger.warning(f"[CLEANUP] Aggressive kill — procs={count}, mem={mem_mb:.0f}MB, force={force}")
+            # Kill ALL chrome-related processes
+            for pattern in ["chrome", "chromium", "headless_shell"]:
+                subprocess.run(
+                    ["pkill", "-9", "-f", pattern],
+                    capture_output=True, timeout=5
+                )
+            # Also kill zombie playwright node processes
+            subprocess.run(
+                ["pkill", "-9", "-f", "playwright.*run-driver"],
+                capture_output=True, timeout=5
+            )
+            time.sleep(0.5)
+            
+            after_count = _count_chrome_procs()
+            after_mem = _get_memory_mb()
+            logger.info(f"[CLEANUP] After kill — procs: {after_count}, RSS: {after_mem:.0f} MB")
+        elif count > 3:
+            # Moderate cleanup — only headless
+            logger.info(f"[CLEANUP] Moderate kill — {count} chrome procs")
             subprocess.run(
                 ["pkill", "-9", "-f", "chrome.*--headless"],
-                capture_output=True, timeout=10
+                capture_output=True, timeout=5
             )
-            time.sleep(1)
     except Exception as e:
         logger.debug(f"[CLEANUP] Chrome cleanup error: {e}")
 
 def _post_job_cleanup(job_id: str):
-    """Run after each job to free memory and kill leaked processes."""
+    """Run after EVERY job to free memory and kill leaked processes."""
     try:
+        # Force garbage collection every single job
         gc.collect()
+        gc.collect()  # second pass catches cyclic refs
         logger.debug(f"[{job_id}] gc.collect() done")
     except:
         pass
     
-    # Every 5 jobs, do a deeper cleanup
-    global _jobs_since_cleanup
-    with _jobs_lock:
-        _jobs_since_cleanup += 1
-        should_deep = _jobs_since_cleanup >= 5
-        if should_deep:
-            _jobs_since_cleanup = 0
+    # Kill zombie chromes after EVERY job (not every 5)
+    _cleanup_zombie_chrome()
     
-    if should_deep:
-        _cleanup_zombie_chrome()
-        try:
-            gc.collect()
-        except:
-            pass
+    # Check if memory is critical — if so, force restart
+    mem_mb = _get_memory_mb()
+    logger.info(f"[{job_id}] Post-job RSS: {mem_mb:.0f} MB")
+    if mem_mb > 450:
+        logger.critical(f"[{job_id}] MEMORY CRITICAL ({mem_mb:.0f}MB) — forcing full cleanup")
+        _cleanup_zombie_chrome(force=True)
+        gc.collect()
+        gc.collect()
+        # If still too high after cleanup, exit to let Railway restart
+        time.sleep(1)
+        mem_after = _get_memory_mb()
+        if mem_after > 400:
+            logger.critical(f"[{job_id}] Still at {mem_after:.0f}MB after cleanup — RESTARTING")
+            os._exit(1)  # Railway will auto-restart
 
 def _periodic_cleanup_loop():
-    """Background thread: every 30 min kill zombie chromes + gc."""
+    """Background thread: every 10 min kill zombie chromes + gc + memory check."""
     while True:
-        time.sleep(1800)  # 30 min
+        time.sleep(600)  # 10 min (was 30)
         try:
-            logger.info("[PERIODIC] Running scheduled memory cleanup...")
+            mem_mb = _get_memory_mb()
+            chrome_count = _count_chrome_procs()
+            logger.info(f"[PERIODIC] RSS: {mem_mb:.0f} MB, Chrome procs: {chrome_count}")
+            
+            # Always cleanup
             _cleanup_zombie_chrome()
             gc.collect()
-            # Log memory usage
+            gc.collect()
+            
+            # Clear Python internal caches
             try:
-                import resource
-                mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-                logger.info(f"[PERIODIC] Peak RSS: {mem_mb:.0f} MB")
+                import importlib
+                importlib.invalidate_caches()
             except:
                 pass
+            
+            # Log after cleanup
+            mem_after = _get_memory_mb()
+            logger.info(f"[PERIODIC] After cleanup RSS: {mem_after:.0f} MB")
+            
+            # Emergency restart if memory won't go down
+            if mem_after > 450:
+                logger.critical(f"[PERIODIC] Memory too high ({mem_after:.0f}MB) — RESTARTING")
+                _cleanup_zombie_chrome(force=True)
+                time.sleep(2)
+                os._exit(1)  # Railway auto-restart
+                
         except Exception as e:
             logger.error(f"[PERIODIC] Cleanup error: {e}")
 
@@ -3091,7 +3154,12 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
             headless=_should_use_headless(),
             channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
-                   "--disable-blink-features=AutomationControlled"]
+                   "--disable-blink-features=AutomationControlled",
+                   "--disable-gpu", "--disable-extensions",
+                   "--disable-background-networking",
+                   "--disable-default-apps", "--disable-sync",
+                   "--disable-translate", "--no-first-run",
+                   "--single-process", "--js-flags=--max-old-space-size=128"]
         )
         ctx = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -3427,7 +3495,12 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         browser = pw.chromium.launch(
             headless=_should_use_headless(), channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
-                  "--disable-blink-features=AutomationControlled"]
+                  "--disable-blink-features=AutomationControlled",
+                  "--disable-gpu", "--disable-extensions",
+                  "--disable-background-networking",
+                  "--disable-default-apps", "--disable-sync",
+                  "--disable-translate", "--no-first-run",
+                  "--single-process", "--js-flags=--max-old-space-size=128"]
         )
         ctx = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -3754,7 +3827,12 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                 headless=_should_use_headless(),
                 channel="chrome",
                 args=["--no-sandbox", "--disable-dev-shm-usage",
-                       "--disable-blink-features=AutomationControlled"]
+                       "--disable-blink-features=AutomationControlled",
+                       "--disable-gpu", "--disable-extensions",
+                       "--disable-background-networking",
+                       "--disable-default-apps", "--disable-sync",
+                       "--disable-translate", "--no-first-run",
+                       "--single-process", "--js-flags=--max-old-space-size=128"]
             )
             ctx = b.new_context(
                 viewport={"width": 1920, "height": 1080},
@@ -4256,9 +4334,38 @@ if __name__ == "__main__":
                 pass
     threading.Thread(target=_log_cleanup_loop, daemon=True).start()
     
-    # Periodic memory/process cleanup every 30 min
+    # Periodic memory/process cleanup every 10 min
     threading.Thread(target=_periodic_cleanup_loop, daemon=True).start()
-    logger.info("[STARTUP] Periodic cleanup thread started (every 30 min)")
+    logger.info("[STARTUP] Periodic cleanup thread started (every 10 min)")
+    
+    # Periodic /tmp cleanup every 20 min (screenshots, playwright temp files)
+    def _tmp_cleanup_loop():
+        while True:
+            time.sleep(1200)  # 20 min
+            try:
+                import glob
+                removed = 0
+                for pattern in ["/tmp/captcha_debug_*.png", "/tmp/playwright*", "/tmp/.org.chromium*", "/tmp/core.*"]:
+                    for f in glob.glob(pattern):
+                        try:
+                            if os.path.isfile(f):
+                                age = time.time() - os.path.getmtime(f)
+                                if age > 300:  # older than 5 min
+                                    os.remove(f)
+                                    removed += 1
+                            elif os.path.isdir(f):
+                                import shutil
+                                age = time.time() - os.path.getmtime(f)
+                                if age > 300:
+                                    shutil.rmtree(f, ignore_errors=True)
+                                    removed += 1
+                        except:
+                            pass
+                if removed:
+                    logger.info(f"[TMP-CLEANUP] Removed {removed} temp files/dirs")
+            except Exception as e:
+                logger.debug(f"[TMP-CLEANUP] Error: {e}")
+    threading.Thread(target=_tmp_cleanup_loop, daemon=True).start()
     
     port = int(os.environ.get("WORKER_PORT", 8787))
     server = ThreadingHTTPServer(("0.0.0.0", port), JobHandler)
