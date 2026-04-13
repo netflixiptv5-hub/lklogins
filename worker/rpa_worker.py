@@ -8,6 +8,8 @@ import time
 import re
 import logging
 import os
+import gc
+import subprocess
 import imaplib
 import email as email_lib
 from email.header import decode_header
@@ -78,8 +80,76 @@ KNOWN_RECOVERY_EMAILS = [
 ]
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
-MAX_WORKERS = 3
+MAX_WORKERS = 2
 SEARCH_MINUTES = 15
+
+# === MEMORY / PROCESS CLEANUP ===
+_active_pws = set()  # track active playwright PIDs
+_active_pws_lock = threading.Lock()
+_jobs_since_cleanup = 0
+_jobs_lock = threading.Lock()
+
+def _cleanup_zombie_chrome():
+    """Kill orphan chrome/chromium processes not tracked by active Playwright instances."""
+    try:
+        # Count chrome processes
+        result = subprocess.run(
+            ["pgrep", "-c", "-f", "chrome"],
+            capture_output=True, text=True, timeout=5
+        )
+        count = int(result.stdout.strip()) if result.stdout.strip() else 0
+        logger.info(f"[CLEANUP] Chrome processes: {count}")
+        
+        if count > 20:  # too many — kill all orphans
+            logger.warning(f"[CLEANUP] {count} chrome procs detected, killing orphans...")
+            subprocess.run(
+                ["pkill", "-9", "-f", "chrome.*--headless"],
+                capture_output=True, timeout=10
+            )
+            time.sleep(1)
+    except Exception as e:
+        logger.debug(f"[CLEANUP] Chrome cleanup error: {e}")
+
+def _post_job_cleanup(job_id: str):
+    """Run after each job to free memory and kill leaked processes."""
+    try:
+        gc.collect()
+        logger.debug(f"[{job_id}] gc.collect() done")
+    except:
+        pass
+    
+    # Every 5 jobs, do a deeper cleanup
+    global _jobs_since_cleanup
+    with _jobs_lock:
+        _jobs_since_cleanup += 1
+        should_deep = _jobs_since_cleanup >= 5
+        if should_deep:
+            _jobs_since_cleanup = 0
+    
+    if should_deep:
+        _cleanup_zombie_chrome()
+        try:
+            gc.collect()
+        except:
+            pass
+
+def _periodic_cleanup_loop():
+    """Background thread: every 30 min kill zombie chromes + gc."""
+    while True:
+        time.sleep(1800)  # 30 min
+        try:
+            logger.info("[PERIODIC] Running scheduled memory cleanup...")
+            _cleanup_zombie_chrome()
+            gc.collect()
+            # Log memory usage
+            try:
+                import resource
+                mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+                logger.info(f"[PERIODIC] Peak RSS: {mem_mb:.0f} MB")
+            except:
+                pass
+        except Exception as e:
+            logger.error(f"[PERIODIC] Cleanup error: {e}")
 
 # === Netflix email subject patterns ===
 EMAIL_PATTERNS = {
@@ -3606,6 +3676,13 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
 
 def process_job(job_id: str, email_addr: str, service: str):
+    """Main job processor — wrapper with cleanup."""
+    try:
+        _process_job_inner(job_id, email_addr, service)
+    finally:
+        _post_job_cleanup(job_id)
+
+def _process_job_inner(job_id: str, email_addr: str, service: str):
     """Main job processor — routes to IMAP direct, Gmail, or API+browser based on email."""
 
     # === CHECK IF IMAP DIRECT (no MS login needed) ===
@@ -4178,6 +4255,10 @@ if __name__ == "__main__":
             except:
                 pass
     threading.Thread(target=_log_cleanup_loop, daemon=True).start()
+    
+    # Periodic memory/process cleanup every 30 min
+    threading.Thread(target=_periodic_cleanup_loop, daemon=True).start()
+    logger.info("[STARTUP] Periodic cleanup thread started (every 30 min)")
     
     port = int(os.environ.get("WORKER_PORT", 8787))
     server = ThreadingHTTPServer(("0.0.0.0", port), JobHandler)
