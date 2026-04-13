@@ -80,7 +80,7 @@ KNOWN_RECOVERY_EMAILS = [
 ]
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
-MAX_WORKERS = 2
+MAX_WORKERS = 4
 SEARCH_MINUTES = 15
 
 # === TELEGRAM ALERTS ===
@@ -4853,20 +4853,23 @@ if __name__ == "__main__":
     
     # Notify Node to clean up stale jobs from previous run
     def _notify_node_restart():
-        time.sleep(5)  # wait for Node to be ready
-        try:
-            req = urllib.request.Request(
-                f"{API_BASE}/api/worker-restart",
-                data=b'{}',
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            resp = urllib.request.urlopen(req, timeout=10)
-            result = json.loads(resp.read())
-            logger.info(f"[STARTUP] Node notified — cleaned {result.get('cleaned', 0)} stale jobs")
-        except Exception as e:
-            logger.warning(f"[STARTUP] Could not notify Node: {e}")
-        send_alert(f"✅ Worker online (porta {port})")
+        # Try multiple times — Node may start after worker
+        for attempt in range(6):
+            time.sleep(10)  # wait 10s between attempts
+            try:
+                req = urllib.request.Request(
+                    f"{API_BASE}/api/worker-restart",
+                    data=b'{}',
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                resp = urllib.request.urlopen(req, timeout=10)
+                result = json.loads(resp.read())
+                logger.info(f"[STARTUP] Node notified — cleaned {result.get('cleaned', 0)} stale jobs")
+                break
+            except Exception as e:
+                logger.warning(f"[STARTUP] Attempt {attempt+1}/6 — Node not ready: {e}")
+        send_alert(f"✅ Worker online (porta {port}, {MAX_WORKERS} workers)")
     threading.Thread(target=_notify_node_restart, daemon=True).start()
     
     server.serve_forever()
