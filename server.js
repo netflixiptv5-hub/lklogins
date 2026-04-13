@@ -14,22 +14,39 @@ function generateJobId() {
   return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 }
 
-// Cleanup old jobs every 5 min — delete finished jobs after 10min, stuck jobs after 15min
+// Cleanup old jobs every 1 min
 setInterval(() => {
   const now = Date.now();
+  let cleaned = 0;
   for (const [id, j] of jobs) {
     const age = now - j.createdAt;
     // Finished jobs (success/error/not_found) — remove after 10 min
     if (["done", "error", "not_found"].includes(j.status) && age > 10 * 60 * 1000) {
       jobs.delete(id);
+      cleaned++;
     }
-    // ANY job older than 15 min — force remove (prevents stuck queue)
-    else if (age > 15 * 60 * 1000) {
+    // Jobs stuck in "connecting" for > 2.5 min — worker probably died/restarted
+    else if (j.status === "connecting" && age > 150_000) {
+      j.status = "error";
+      j.message = "Servidor reiniciou. Tente novamente.";
+      cleaned++;
+    }
+    // Jobs stuck in "searching" for > 4 min — something went wrong
+    else if (j.status === "searching" && age > 240_000) {
+      j.status = "error";
+      j.message = "Timeout na busca. Tente novamente.";
+      cleaned++;
+    }
+    // ANY job older than 10 min — force remove
+    else if (age > 10 * 60 * 1000) {
       jobs.delete(id);
+      cleaned++;
     }
   }
-  console.log(`[CLEANUP] Jobs in memory: ${jobs.size}`);
-}, 5 * 60 * 1000);
+  if (cleaned > 0 || jobs.size > 0) {
+    console.log(`[CLEANUP] Jobs: ${jobs.size}, cleaned: ${cleaned}`);
+  }
+}, 60_000);
 
 // === API Routes ===
 app.use(express.json());
@@ -145,6 +162,20 @@ app.post("/api/captcha-click/:jobId", async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: "Worker unavailable" });
   }
+});
+
+// Worker calls this on startup — mark all pending jobs as error
+app.post("/api/worker-restart", (req, res) => {
+  let cleaned = 0;
+  for (const [id, j] of jobs) {
+    if (["connecting", "searching"].includes(j.status)) {
+      j.status = "error";
+      j.message = "Servidor reiniciou. Tente novamente.";
+      cleaned++;
+    }
+  }
+  console.log(`[WORKER-RESTART] Cleaned ${cleaned} pending jobs`);
+  res.json({ ok: true, cleaned });
 });
 
 app.post("/api/update", (req, res) => {

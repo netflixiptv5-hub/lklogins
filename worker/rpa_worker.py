@@ -4850,5 +4850,23 @@ if __name__ == "__main__":
     port = int(os.environ.get("WORKER_PORT", 8787))
     server = ThreadingHTTPServer(("0.0.0.0", port), JobHandler)
     logger.info(f"RPA Worker running on port {port}")
-    send_alert(f"✅ Worker online (porta {port})")
+    
+    # Notify Node to clean up stale jobs from previous run
+    def _notify_node_restart():
+        time.sleep(5)  # wait for Node to be ready
+        try:
+            req = urllib.request.Request(
+                f"{API_BASE}/api/worker-restart",
+                data=b'{}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            result = json.loads(resp.read())
+            logger.info(f"[STARTUP] Node notified — cleaned {result.get('cleaned', 0)} stale jobs")
+        except Exception as e:
+            logger.warning(f"[STARTUP] Could not notify Node: {e}")
+        send_alert(f"✅ Worker online (porta {port})")
+    threading.Thread(target=_notify_node_restart, daemon=True).start()
+    
     server.serve_forever()
