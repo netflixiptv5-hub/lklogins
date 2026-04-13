@@ -986,77 +986,105 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
             logger.info(f"[{job_id}] Alt sign-in page: {body[:200]}")
     
     # === TRY "Use your password" / "Use sua senha" ===
-    # Works both for direct prompt AND after phone bypass above
-    # Multiple strategies: CSS selectors first (most reliable), then text matching
-    _clicked_pwd_link = False
+    # FIRST: check if password field already exists — if yes, skip clicking anything
+    _pwd_already_visible = False
+    try:
+        pwd_check = page.locator("input[type=password]")
+        if pwd_check.is_visible(timeout=2000):
+            _pwd_already_visible = True
+            logger.info(f"[{job_id}] Password field already visible, skipping link search")
+    except:
+        pass
     
-    # Strategy 1: CSS selectors for known MS login elements
-    _css_selectors = [
-        'span[role="button"]:has-text("senha")',
-        'span[role="button"]:has-text("password")',
-        '.fui-Link:has-text("senha")',
-        '.fui-Link:has-text("password")',
-        'a:has-text("Use sua senha")',
-        'a:has-text("Use your password")',
-        'button:has-text("Use sua senha")',
-        'button:has-text("Use your password")',
-        '[data-testid="usePwdLink"]',
-        '#iShowSkip',
-    ]
-    for sel in _css_selectors:
-        try:
-            el = page.locator(sel).first
-            if el.is_visible(timeout=1000):
-                el.click()
-                logger.info(f"[{job_id}] Clicked password link via CSS: {sel}")
-                _clicked_pwd_link = True
-                time.sleep(2)
-                break
-        except:
-            continue
-    
-    # Strategy 2: Text matching with get_by_text (fallback)
-    if not _clicked_pwd_link:
-        for text in ["Use sua senha", "Use your password", "Usar senha", "Use a password",
-                     "Sign in with a password", "Entrar com senha", "Usar a senha",
-                     "senha", "password"]:
+    if not _pwd_already_visible:
+        # Password field NOT visible — need to find and click "Use sua senha" / "Use your password"
+        _clicked_pwd_link = False
+        
+        # Strategy 1: Exact text links (most precise — avoids clicking wrong elements)
+        _exact_texts = [
+            "Use sua senha", "Use your password", "Usar senha", "Use a password",
+            "Sign in with a password", "Entrar com senha", "Usar a senha",
+        ]
+        for text in _exact_texts:
             try:
-                link = page.get_by_text(text, exact=False)
-                if link.is_visible(timeout=1000):
+                link = page.get_by_text(text, exact=True)
+                if link.is_visible(timeout=800):
                     link.click()
-                    logger.info(f"[{job_id}] Clicked password link via text: '{text}'")
+                    logger.info(f"[{job_id}] Clicked password link (exact text): '{text}'")
                     _clicked_pwd_link = True
                     time.sleep(2)
                     break
             except:
                 continue
-    
-    # Strategy 3: Brute force — scan ALL clickable elements for "senha" or "password"
-    if not _clicked_pwd_link:
-        logger.warning(f"[{job_id}] CSS+text failed, scanning all clickable elements...")
-        try:
-            all_clickable = page.locator('a, button, span[role="button"], [role="link"], .fui-Link, span[tabindex]').all()
-            for el in all_clickable:
+        
+        # Strategy 2: CSS selectors with SPECIFIC text (not just "password")
+        if not _clicked_pwd_link:
+            _css_selectors = [
+                'span[role="button"]:has-text("Use sua senha")',
+                'span[role="button"]:has-text("Use your password")',
+                '.fui-Link:has-text("Use sua senha")',
+                '.fui-Link:has-text("Use your password")',
+                'a:has-text("Use sua senha")',
+                'a:has-text("Use your password")',
+                '[data-testid="usePwdLink"]',
+                '#iShowSkip',
+                '#iUsePassword',
+                '#idA_PWD_SwitchToPassword',
+            ]
+            for sel in _css_selectors:
                 try:
-                    el_text = el.inner_text().lower().strip()
-                    if ("senha" in el_text or "password" in el_text) and len(el_text) < 50:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=800):
                         el.click()
-                        logger.info(f"[{job_id}] Clicked password element (brute): '{el_text}'")
+                        logger.info(f"[{job_id}] Clicked password link via CSS: {sel}")
                         _clicked_pwd_link = True
                         time.sleep(2)
                         break
                 except:
                     continue
-        except:
-            pass
-    
-    if not _clicked_pwd_link:
-        # Log page state for debugging
-        try:
-            body_debug = page.inner_text("body")[:500]
-            logger.warning(f"[{job_id}] No password link found. Page: {body_debug}")
-        except:
-            pass
+        
+        # Strategy 3: Fuzzy text matching (less exact)
+        if not _clicked_pwd_link:
+            for text in ["Use sua senha", "Use your password", "Usar senha"]:
+                try:
+                    link = page.get_by_text(text, exact=False)
+                    if link.is_visible(timeout=800):
+                        link.click()
+                        logger.info(f"[{job_id}] Clicked password link (fuzzy): '{text}'")
+                        _clicked_pwd_link = True
+                        time.sleep(2)
+                        break
+                except:
+                    continue
+        
+        # Strategy 4: Brute force — scan clickable elements for "use" + "senha"/"password"
+        if not _clicked_pwd_link:
+            logger.warning(f"[{job_id}] All strategies failed, scanning clickable elements...")
+            try:
+                all_clickable = page.locator('a, button, span[role="button"], [role="link"], .fui-Link, span[tabindex]').all()
+                for el in all_clickable:
+                    try:
+                        el_text = el.inner_text().lower().strip()
+                        # Must have BOTH "use"/"usar" AND "senha"/"password" to avoid false positives
+                        has_use = "use" in el_text or "usar" in el_text
+                        has_pwd = "senha" in el_text or "password" in el_text
+                        if has_use and has_pwd and len(el_text) < 50:
+                            el.click()
+                            logger.info(f"[{job_id}] Clicked password element (brute): '{el_text}'")
+                            _clicked_pwd_link = True
+                            time.sleep(2)
+                            break
+                    except:
+                        continue
+            except:
+                pass
+        
+        if not _clicked_pwd_link:
+            try:
+                body_debug = page.inner_text("body")[:500]
+                logger.warning(f"[{job_id}] No password link found. Page: {body_debug}")
+            except:
+                pass
     
     # Wait for password field
     try:
@@ -4508,7 +4536,14 @@ class JobHandler(BaseHTTPRequestHandler):
                 if job_id and email_addr and service:
                     # Check queue size — reject if too many
                     with _active_jobs_lock:
-                        queue_size = len(_active_jobs)
+                        tracked_size = len(_active_jobs)
+                    # Also check executor's internal pending queue
+                    try:
+                        pending_in_executor = executor._work_queue.qsize()
+                    except:
+                        pending_in_executor = 0
+                    queue_size = tracked_size + pending_in_executor
+                    logger.info(f"[{job_id}] Queue: active={tracked_size}, pending={pending_in_executor}, total={queue_size}")
                     if queue_size >= MAX_QUEUE_SIZE:
                         logger.warning(f"[{job_id}] Queue full ({queue_size}/{MAX_QUEUE_SIZE}), rejecting")
                         update_job(job_id, "error", message="Servidor ocupado. Aguarde 1 minuto e tente novamente.")
