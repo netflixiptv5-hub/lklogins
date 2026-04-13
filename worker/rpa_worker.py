@@ -3934,9 +3934,30 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
 
 def process_job(job_id: str, email_addr: str, service: str):
-    """Main job processor — wrapper with cleanup."""
+    """Main job processor — wrapper with cleanup and global timeout."""
+    import signal
+    
+    JOB_TIMEOUT = 300  # 5 min max per job
+    _timed_out = [False]
+    
+    def _timeout_handler():
+        """Background thread that kills the job if it takes too long."""
+        time.sleep(JOB_TIMEOUT)
+        _timed_out[0] = True
+        logger.error(f"[{job_id}] JOB TIMEOUT after {JOB_TIMEOUT}s — forcing cleanup")
+        update_job(job_id, "error", message=f"Timeout após {JOB_TIMEOUT}s. Tente novamente.")
+        # Kill any Chrome processes for this job
+        _post_job_cleanup(job_id)
+    
+    timer = threading.Thread(target=_timeout_handler, daemon=True)
+    timer.start()
+    
     try:
         _process_job_inner(job_id, email_addr, service)
+    except Exception as e:
+        if not _timed_out[0]:
+            logger.error(f"[{job_id}] Unhandled error: {e}")
+            update_job(job_id, "error", message="Erro interno. Tente novamente.")
     finally:
         _post_job_cleanup(job_id)
 
