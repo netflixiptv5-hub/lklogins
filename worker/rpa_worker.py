@@ -1251,25 +1251,46 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                             new_url = page.url.lower()
                             logger.info(f"[{job_id}] After '{text}': {new_url} | {new_body[:300]}")
                             
-                            # Check if we got an email input or a code input
-                            has_text_input = False
-                            for sel in ["input[type=email]", "input[type=text]:not([name=loginfmt])",
-                                        "input[id*='iOttText']", "input[placeholder*='@']",
-                                        "input[placeholder*='code']", "input[placeholder*='código']"]:
+                            # Check if page now has an EMAIL input (not just a code/tel input)
+                            has_email_input = False
+                            for sel in ["input[type=email]", "input[placeholder*='@']"]:
                                 try:
                                     inp = page.locator(sel).first
                                     if inp.is_visible(timeout=1500):
-                                        inp_type = inp.get_attribute("type") or "text"
-                                        if inp_type != "radio":
-                                            has_text_input = True
-                                            break
+                                        has_email_input = True
+                                        break
                                 except:
                                     continue
                             
-                            if has_text_input or "@" in new_body or "cinepremiu" in new_body:
+                            # If "enter the code" page → this is TOTP/authenticator, not email
+                            # We can't help here, go back and try next strategy
+                            if "enter the code" in new_body or "insira o código" in new_body or "digite o código" in new_body:
+                                if not has_email_input:
+                                    logger.info(f"[{job_id}] 'I have a code' leads to authenticator code input — can't use, going back...")
+                                    # Try to go back
+                                    for back_text in ["Use a different verification option", "Usar outra opção de verificação",
+                                                       "Back", "Voltar"]:
+                                        try:
+                                            bl = page.get_by_text(back_text, exact=False)
+                                            if bl.is_visible(timeout=1500):
+                                                bl.click()
+                                                time.sleep(3)
+                                                logger.info(f"[{job_id}] Went back via '{back_text}'")
+                                                break
+                                        except:
+                                            continue
+                                    else:
+                                        try:
+                                            page.go_back()
+                                            time.sleep(3)
+                                        except:
+                                            pass
+                                    break  # Don't set _phone_bypassed, continue to Strategy 3
+                            
+                            if has_email_input or "@cinepremiu" in new_body or "@gmail" in new_body:
                                 body_text = new_body
                                 _phone_bypassed = True
-                                logger.info(f"[{job_id}] Got verification options after 'I have a code'!")
+                                logger.info(f"[{job_id}] Got email verification options after 'I have a code'!")
                             break
                     except:
                         continue
