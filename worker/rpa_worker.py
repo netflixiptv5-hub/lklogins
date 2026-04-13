@@ -4503,7 +4503,11 @@ def _tracked_process_job(job_id, email_addr, service):
             _active_jobs.pop(job_id, None)
 
 # Cleanup stuck jobs every 3 min — mark as error if running > 5 min (300s)
+# Also detect dead executor (active=0 but pending>0) and force restart
+_dead_executor_count = 0
+
 def _job_queue_cleanup_loop():
+    global _dead_executor_count
     while True:
         time.sleep(180)  # 3 min
         try:
@@ -4517,7 +4521,26 @@ def _job_queue_cleanup_loop():
                     _active_jobs.pop(jid, None)
             with _active_jobs_lock:
                 count = len(_active_jobs)
-            logger.info(f"[QUEUE-CLEANUP] Active jobs: {count}")
+            
+            # Check for dead executor: no active jobs but pending in queue
+            try:
+                pending = executor._work_queue.qsize()
+            except:
+                pending = 0
+            
+            logger.info(f"[QUEUE-CLEANUP] Active jobs: {count}, Pending: {pending}")
+            
+            if count == 0 and pending > 0:
+                _dead_executor_count += 1
+                logger.warning(f"[QUEUE-CLEANUP] Dead executor detected! active=0 pending={pending} (count={_dead_executor_count}/2)")
+                if _dead_executor_count >= 2:
+                    logger.critical(f"[QUEUE-CLEANUP] Executor dead for 2 cycles — RESTARTING")
+                    _cleanup_zombie_chrome(force=True)
+                    time.sleep(1)
+                    os._exit(1)  # Railway auto-restart
+            else:
+                _dead_executor_count = 0
+                
         except Exception as e:
             logger.error(f"[QUEUE-CLEANUP] Error: {e}")
 
