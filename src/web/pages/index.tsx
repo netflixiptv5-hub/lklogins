@@ -178,10 +178,21 @@ export default function Index() {
     setElapsedSec(0);
     updateSteps("connecting");
 
-    // Start elapsed timer
+    // Start elapsed timer (auto-error after 300s)
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
-      setElapsedSec((prev) => prev + 1);
+      setElapsedSec((prev) => {
+        if (prev + 1 > 300) {
+          // 5 min timeout — assume something went wrong
+          if (timerRef.current) clearInterval(timerRef.current);
+          if (pollRef.current) clearInterval(pollRef.current);
+          setJobStatus("error");
+          setErrorMessage("Tempo limite excedido. Tente novamente.");
+          updateSteps("error");
+          return prev + 1;
+        }
+        return prev + 1;
+      });
     }, 1000);
 
     try {
@@ -293,10 +304,21 @@ export default function Index() {
     setJobStatus("searching");
     updateSteps("searching");
 
-    // Start elapsed timer
+    // Start elapsed timer (auto-error after 300s)
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
-      setElapsedSec((prev) => prev + 1);
+      setElapsedSec((prev) => {
+        if (prev + 1 > 300) {
+          // 5 min timeout — assume something went wrong
+          if (timerRef.current) clearInterval(timerRef.current);
+          if (pollRef.current) clearInterval(pollRef.current);
+          setJobStatus("error");
+          setErrorMessage("Tempo limite excedido. Tente novamente.");
+          updateSteps("error");
+          return prev + 1;
+        }
+        return prev + 1;
+      });
     }, 1000);
 
     try {
@@ -457,14 +479,12 @@ export default function Index() {
                               {elapsedSec}s
                             </span>
                           </div>
-                          {eta && (
-                            <div className="mt-2 w-full bg-[#333] rounded-full h-1.5 overflow-hidden">
-                              <div
-                                className="h-full bg-[#E50914] rounded-full transition-all duration-1000"
-                                style={{ width: `${Math.min((elapsedSec / eta) * 100, 95)}%` }}
-                              />
-                            </div>
-                          )}
+                          <div className="mt-2 w-full bg-[#333] rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="h-full bg-[#E50914] rounded-full transition-all duration-1000"
+                              style={{ width: `${Math.min((elapsedSec / (eta || 30)) * 100, 95)}%` }}
+                            />
+                          </div>
                         </div>
                         <div className="space-y-3 text-left">
                           {steps.map((step, i) => (
