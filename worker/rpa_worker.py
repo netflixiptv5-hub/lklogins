@@ -425,17 +425,18 @@ def resolve_recovery_email(masked_prefix: str, masked_domain_hint: str, job_id: 
 def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60, min_timestamp: float = 0) -> str | None:
     """Get Microsoft verification code from @cinepremiu.com via IMAP.
     min_timestamp: only accept emails received AFTER this unix timestamp (to skip old codes).
+    Always returns the code from the NEWEST matching email.
     """
     logger.info(f"[{job_id}] Waiting for MS verification code...")
     start = time.time()
-    seen_ids = set()
+    _last_seen_max_id = 0  # track highest msg_id we've seen
 
     while time.time() - start < max_wait:
         try:
             mail = imaplib.IMAP4_SSL(RECOVERY_IMAP_SERVER, 993, timeout=10)
             mail.login(RECOVERY_EMAIL, RECOVERY_PASSWORD)
             mail.select("INBOX", readonly=True)
-            cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
+            cutoff = (datetime.now() - timedelta(minutes=3)).strftime("%d-%b-%Y")
             
             # If target_email specified, search TO that address; otherwise broad search
             if "@" in target_email:
@@ -445,52 +446,67 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60,
             status, msg_ids = mail.search(None, search_criteria)
 
             if status == "OK" and msg_ids[0]:
-                for msg_id in reversed(msg_ids[0].split()[-10:]):
-                    if msg_id in seen_ids:
-                        continue
-                    seen_ids.add(msg_id)
-                    try:
-                        _, msg_data = mail.fetch(msg_id, "(RFC822)")
-                        msg = email_lib.message_from_bytes(msg_data[0][1])
-                        
-                        # Skip emails older than min_timestamp
-                        if min_timestamp > 0:
-                            try:
-                                date_str = msg.get("Date", "")
-                                if date_str:
-                                    msg_dt = parsedate_to_datetime(date_str)
-                                    from datetime import timezone
-                                    if msg_dt.tzinfo is None:
-                                        msg_dt = msg_dt.replace(tzinfo=timezone.utc)
-                                    msg_ts = msg_dt.timestamp()
-                                    # Allow 30s tolerance (clock skew between servers)
-                                    if msg_ts < min_timestamp - 30:
-                                        continue
-                            except:
-                                pass  # Can't parse date, try anyway
-                        
-                        body = ""
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                if part.get_content_type() in ("text/plain", "text/html"):
-                                    payload = part.get_payload(decode=True)
-                                    if payload:
-                                        body += payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
-                        else:
-                            payload = msg.get_payload(decode=True)
-                            if payload:
-                                body += payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
+                all_ids = msg_ids[0].split()
+                # Only look at the NEWEST email (highest msg_id = last in list)
+                # This ensures we always get the most recent code
+                newest_id = all_ids[-1]
+                newest_int = int(newest_id)
+                
+                if newest_int <= _last_seen_max_id and min_timestamp > 0:
+                    # No new emails since last check — keep waiting
+                    mail.logout()
+                    time.sleep(4)
+                    continue
+                
+                _last_seen_max_id = newest_int
+                
+                try:
+                    _, msg_data = mail.fetch(newest_id, "(RFC822)")
+                    msg = email_lib.message_from_bytes(msg_data[0][1])
+                    
+                    # Check timestamp — skip if older than when we clicked Send
+                    if min_timestamp > 0:
+                        try:
+                            date_str = msg.get("Date", "")
+                            if date_str:
+                                msg_dt = parsedate_to_datetime(date_str)
+                                from datetime import timezone
+                                if msg_dt.tzinfo is None:
+                                    msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+                                msg_ts = msg_dt.timestamp()
+                                # Allow 60s tolerance (clock skew between MS and IMAP server)
+                                if msg_ts < min_timestamp - 60:
+                                    logger.debug(f"[{job_id}] Newest email too old: {msg_ts} < {min_timestamp - 60}")
+                                    mail.logout()
+                                    time.sleep(4)
+                                    continue
+                        except:
+                            pass  # Can't parse date, try anyway
+                    
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() in ("text/plain", "text/html"):
+                                payload = part.get_payload(decode=True)
+                                if payload:
+                                    body += payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+                    else:
+                        payload = msg.get_payload(decode=True)
+                        if payload:
+                            body += payload.decode(msg.get_content_charset() or "utf-8", errors="ignore")
 
-                        for pattern in [
-                            r'>\s*(\d{6,8})\s*<', r'(?:security code|código|segurança)[:\s]*(\d{4,8})',
-                            r'<td[^>]*>\s*(\d{6,8})\s*</td>', r'(?:^|\s)(\d{6,8})(?:\s|$)',
-                        ]:
-                            matches = re.findall(pattern, body, re.IGNORECASE)
-                            if matches:
-                                mail.logout()
-                                return matches[0].strip()
-                    except:
-                        continue
+                    for pattern in [
+                        r'>\s*(\d{6,8})\s*<', r'(?:security code|código|segurança)[:\s]*(\d{4,8})',
+                        r'<td[^>]*>\s*(\d{6,8})\s*</td>', r'(?:^|\s)(\d{6,8})(?:\s|$)',
+                    ]:
+                        matches = re.findall(pattern, body, re.IGNORECASE)
+                        if matches:
+                            code = matches[0].strip()
+                            logger.info(f"[{job_id}] Got code: {code} (msg_id={newest_int})")
+                            mail.logout()
+                            return code
+                except:
+                    pass
             mail.logout()
         except:
             pass
