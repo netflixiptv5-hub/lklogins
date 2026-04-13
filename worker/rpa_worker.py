@@ -12,6 +12,7 @@ import gc
 import subprocess
 import imaplib
 import email as email_lib
+import asyncio
 from email.header import decode_header
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -99,6 +100,25 @@ def send_alert(msg: str):
     except Exception as e:
         logger.error(f"[ALERT] Failed to send: {e}")
 
+
+def _start_playwright_sync():
+    """Start sync_playwright safely — clears any lingering asyncio event loop first.
+    httpx creates an event loop that makes sync_playwright() fail with
+    'Playwright Sync API inside the asyncio loop' error."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Can't remove a running loop, but this shouldn't happen in ThreadPoolExecutor
+            pass
+        else:
+            # Close the stale loop and remove it so playwright creates its own
+            loop.close()
+    except RuntimeError:
+        pass  # No event loop — perfect
+    # Remove the current thread's event loop so playwright starts clean
+    asyncio.set_event_loop(None)
+    from playwright.sync_api import sync_playwright
+    return sync_playwright().start()
 
 def _safe_close_browser(browser, pw, job_id="?"):
     """Close browser and playwright with timeout — never hangs on crashed Playwright."""
@@ -3516,7 +3536,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
         update_job(job_id, "connecting", method="playwright", eta=30,
                    message="Conectando ao Gmail...")
         
-        pw = sync_playwright().start()
+        pw = _start_playwright_sync()
         browser = pw.chromium.launch(
             headless=_should_use_headless(),
             channel="chrome",
@@ -3849,7 +3869,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         update_job(job_id, "connecting", method="code", eta=60,
                    message="Login por código... aguarde ~1min")
 
-        pw = sync_playwright().start()
+        pw = _start_playwright_sync()
         browser = pw.chromium.launch(
             headless=_should_use_headless(), channel="chrome",
             args=["--no-sandbox", "--disable-dev-shm-usage",
@@ -4196,7 +4216,7 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
     try:
         update_job(job_id, "connecting", method="playwright", eta=30)
         
-        pw = sync_playwright().start()
+        pw = _start_playwright_sync()
         
         def launch_browser():
             b = pw.chromium.launch(
