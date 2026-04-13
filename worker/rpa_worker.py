@@ -1364,10 +1364,47 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                     except:
                         continue
             
-            # If phone-only and no bypass worked, don't try email flow (will fail on radio buttons)
+            # If phone bypass didn't work, check if there are ALSO email options (radio buttons)
+            # MS can show phone + email together. Don't give up — continue to Flow A below.
             if not _phone_bypassed:
-                logger.warning(f"[{job_id}] Phone-only verification, no bypass available. Giving up.")
-                return False
+                body_text = page.inner_text("body").lower()
+                # Check if page has email options (radio buttons with @cinepremiu, @gmail, etc.)
+                has_email_option = any(kw in body_text for kw in [
+                    "@cinepremiu", "@gmail", "email", "e-mail",
+                    "send a code to", "enviar código para", "enviar um código",
+                ])
+                has_radio_buttons = page.locator("input[type=radio]").count() > 0
+                
+                if has_email_option or has_radio_buttons:
+                    logger.info(f"[{job_id}] Phone detected but ALSO has email options (radios={has_radio_buttons}), continuing to Flow A...")
+                    _phone_bypassed = True  # let it continue
+                else:
+                    # Try one more thing: click "I have a code" or "Sign in another way" to reveal email options
+                    for fallback_text in ["Sign in another way", "Entrar de outra forma",
+                                          "Other ways to sign in", "Outras maneiras de entrar",
+                                          "I have a code", "Tenho um código",
+                                          "Use a different verification option", "Usar outra opção"]:
+                        try:
+                            link = page.get_by_text(fallback_text, exact=False)
+                            if link.is_visible(timeout=1500):
+                                link.click()
+                                logger.info(f"[{job_id}] Phone fallback: clicked '{fallback_text}'")
+                                time.sleep(3)
+                                body_text = page.inner_text("body").lower()
+                                if any(kw in body_text for kw in ["@cinepremiu", "@gmail", "email", "e-mail", "send a code"]):
+                                    _phone_bypassed = True
+                                    logger.info(f"[{job_id}] Found email options after clicking '{fallback_text}'!")
+                                    break
+                                if page.locator("input[type=radio]").count() > 0:
+                                    _phone_bypassed = True
+                                    logger.info(f"[{job_id}] Found radio buttons after clicking '{fallback_text}'!")
+                                    break
+                        except:
+                            continue
+                
+                if not _phone_bypassed:
+                    logger.warning(f"[{job_id}] Phone-only verification, no email options found. Giving up.")
+                    return False
         
         # === RESOLVE RECOVERY EMAIL ===
         # Extract masked email from page (e.g. "te*****@gmail.com" or "te*****@gm" or "ca***@cinepremiu.com")
@@ -1400,25 +1437,68 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         logger.info(f"[{job_id}] Verification: using {recovery}")
         
         # === FLOW A: "Help us protect your account" with radio buttons ===
-        has_radio = "protect your account" in body_text or "proteja sua conta" in body_text or "help us" in body_text
-        has_email_radio = "cinepremiu" in body_text or "email" in body_text
+        has_radio_buttons = page.locator("input[type=radio]").count() > 0
+        has_protect_text = "protect your account" in body_text or "proteja sua conta" in body_text or "help us" in body_text
+        has_email_radio = "cinepremiu" in body_text or "email" in body_text or "@" in body_text
         
-        if has_radio and has_email_radio:
+        if (has_protect_text and has_email_radio) or (has_radio_buttons and has_email_radio):
             logger.info(f"[{job_id}] Flow A: Radio button verification")
             
-            # Select the email radio button (first radio, which is the email option)
+            # Select the EMAIL radio button (NOT the phone one)
+            # MS may show multiple radio buttons: phone (text ***54) and email (em***@cinepremiu.com)
+            # We need to find and click the one that contains "@" or "email"
+            _selected_radio = False
             try:
-                # Click on the radio button or the text next to it
-                email_option = page.locator("input[type=radio]").first
-                if email_option.is_visible(timeout=2000):
-                    email_option.click(force=True)
-                    logger.info(f"[{job_id}] Selected email radio button")
-                    time.sleep(0.5)
+                all_radios = page.locator("input[type=radio]").all()
+                radio_count = len(all_radios)
+                logger.info(f"[{job_id}] Found {radio_count} radio buttons")
+                
+                if radio_count > 1:
+                    # Multiple radios — find the email one by checking nearby text/label
+                    for idx, radio in enumerate(all_radios):
+                        try:
+                            # Get the parent/label text near this radio
+                            parent_text = radio.evaluate("el => { let p = el.closest('div, label, li, tr'); return p ? p.textContent : ''; }") or ""
+                            parent_text_lower = parent_text.lower().strip()
+                            logger.info(f"[{job_id}] Radio #{idx}: '{parent_text_lower[:80]}'")
+                            
+                            # Select this radio if it mentions email/@ and NOT phone/sms/text
+                            is_email = "@" in parent_text or "email" in parent_text_lower or "e-mail" in parent_text_lower
+                            is_phone = any(kw in parent_text_lower for kw in ["text", "sms", "phone", "telefone", "número", "number"])
+                            
+                            if is_email and not is_phone:
+                                radio.click(force=True)
+                                logger.info(f"[{job_id}] Selected EMAIL radio #{idx}: {parent_text_lower[:60]}")
+                                _selected_radio = True
+                                break
+                        except:
+                            continue
+                    
+                    if not _selected_radio:
+                        # Fallback: try the LAST radio (email is usually second)
+                        try:
+                            all_radios[-1].click(force=True)
+                            logger.info(f"[{job_id}] Selected LAST radio button (fallback)")
+                            _selected_radio = True
+                        except:
+                            pass
+                
+                if not _selected_radio and radio_count >= 1:
+                    # Single radio or couldn't find email one — click first
+                    all_radios[0].click(force=True)
+                    logger.info(f"[{job_id}] Selected first (only) radio button")
+                    _selected_radio = True
+                    
+                time.sleep(0.5)
             except:
+                pass
+            
+            if not _selected_radio:
                 # Try clicking the text label instead
                 try:
-                    page.locator("text=/Email.*cinepremiu|Email.*@/i").first.click()
+                    page.locator("text=/Email.*cinepremiu|Email.*@|.*@.*\\.com/i").first.click()
                     logger.info(f"[{job_id}] Clicked email label")
+                    _selected_radio = True
                     time.sleep(0.5)
                 except:
                     logger.warning(f"[{job_id}] Could not find email radio")
