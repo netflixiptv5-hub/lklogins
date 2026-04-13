@@ -99,6 +99,29 @@ def send_alert(msg: str):
     except Exception as e:
         logger.error(f"[ALERT] Failed to send: {e}")
 
+
+def _safe_close_browser(browser, pw, job_id="?"):
+    """Close browser and playwright with timeout — never hangs."""
+    def _do_close():
+        if browser:
+            try:
+                browser.close()
+            except:
+                pass
+        if pw:
+            try:
+                pw.stop()
+            except:
+                pass
+    
+    t = threading.Thread(target=_do_close, daemon=True)
+    t.start()
+    t.join(timeout=5)  # max 5 seconds to close
+    if t.is_alive():
+        logger.warning(f"[{job_id}] browser.close()/pw.stop() hung — killing chrome procs")
+        _kill_all_chrome()
+
+
 # === MEMORY / PROCESS CLEANUP ===
 _active_pws = set()  # track active playwright PIDs
 _active_pws_lock = threading.Lock()
@@ -3535,16 +3558,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
         update_job(job_id, "error", message=f"Erro: {str(e)[:100]}")
     
     finally:
-        if browser:
-            try:
-                browser.close()
-            except:
-                pass
-        if pw:
-            try:
-                pw.stop()
-            except:
-                pass
+        _safe_close_browser(browser, pw, job_id)
 
 
 RECOVERY_FALLBACKS = (
@@ -4075,16 +4089,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         logger.error(f"[{job_id}] Code login error: {traceback.format_exc()}")
         return False  # Let other methods try
     finally:
-        if browser:
-            try:
-                browser.close()
-            except:
-                pass
-        if pw:
-            try:
-                pw.stop()
-            except:
-                pass
+        _safe_close_browser(browser, pw, job_id)
 
 
 def process_job(job_id: str, email_addr: str, service: str):
@@ -4484,16 +4489,7 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
         _playwright_password_fail = True  # tenta code login como fallback
     
     finally:
-        if browser:
-            try:
-                browser.close()
-            except:
-                pass
-        if pw:
-            try:
-                pw.stop()
-            except:
-                pass
+        _safe_close_browser(browser, pw, job_id)
 
     # === LAST RESORT: CODE LOGIN (se Playwright falhou por qualquer motivo) ===
     if _playwright_password_fail:
