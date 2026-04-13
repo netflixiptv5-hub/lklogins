@@ -83,6 +83,22 @@ API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
 MAX_WORKERS = 2
 SEARCH_MINUTES = 15
 
+# === TELEGRAM ALERTS ===
+_ALERT_BOT_TOKEN = os.environ.get("ALERT_BOT_TOKEN", "8701402389:AAGAj33V5dgLJp2JbP8QJUd9hXTSL2f0_TY")
+_ALERT_CHAT_ID = os.environ.get("ALERT_CHAT_ID", "925542353")
+_startup_time = time.time()
+
+def send_alert(msg: str):
+    """Send Telegram alert to admin."""
+    try:
+        import urllib.request
+        url = f"https://api.telegram.org/bot{_ALERT_BOT_TOKEN}/sendMessage"
+        data = json.dumps({"chat_id": _ALERT_CHAT_ID, "text": f"🔔 LKLOGINS\n{msg}", "parse_mode": "HTML"}).encode()
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        logger.error(f"[ALERT] Failed to send: {e}")
+
 # === MEMORY / PROCESS CLEANUP ===
 _active_pws = set()  # track active playwright PIDs
 _active_pws_lock = threading.Lock()
@@ -177,6 +193,7 @@ def _post_job_cleanup(job_id: str):
         mem_after = _get_memory_mb()
         if mem_after > 400:
             logger.critical(f"[{job_id}] Still at {mem_after:.0f}MB after cleanup — RESTARTING")
+            send_alert(f"⚠️ Memória alta ({mem_after:.0f}MB) no job {job_id}\nReiniciando automaticamente...")
             os._exit(1)  # Railway will auto-restart
 
 def _periodic_cleanup_loop():
@@ -207,6 +224,7 @@ def _periodic_cleanup_loop():
             # Emergency restart if memory won't go down
             if mem_after > 450:
                 logger.critical(f"[PERIODIC] Memory too high ({mem_after:.0f}MB) — RESTARTING")
+                send_alert(f"⚠️ Memória crítica ({mem_after:.0f}MB)\nReiniciando automaticamente...")
                 _cleanup_zombie_chrome(force=True)
                 time.sleep(2)
                 os._exit(1)  # Railway auto-restart
@@ -4535,6 +4553,7 @@ def _job_queue_cleanup_loop():
                 logger.warning(f"[QUEUE-CLEANUP] Dead executor detected! active=0 pending={pending} (count={_dead_executor_count}/2)")
                 if _dead_executor_count >= 2:
                     logger.critical(f"[QUEUE-CLEANUP] Executor dead for 2 cycles — RESTARTING")
+                    send_alert(f"💀 Executor travou (active=0, pending={pending})\nReiniciando automaticamente...")
                     _cleanup_zombie_chrome(force=True)
                     time.sleep(1)
                     os._exit(1)  # Railway auto-restart
@@ -4782,4 +4801,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("WORKER_PORT", 8787))
     server = ThreadingHTTPServer(("0.0.0.0", port), JobHandler)
     logger.info(f"RPA Worker running on port {port}")
+    send_alert(f"✅ Worker online (porta {port})")
     server.serve_forever()
