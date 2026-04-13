@@ -102,30 +102,21 @@ def send_alert(msg: str):
 
 
 def _start_playwright_sync():
-    """Start sync_playwright safely — clears any lingering asyncio event loop first.
-    httpx and previous playwright instances leave event loops that cause
-    'Playwright Sync API inside the asyncio loop' error."""
-    # Aggressively clear any event loop in this thread
-    try:
-        loop = asyncio.get_event_loop()
-        if not loop.is_running():
-            loop.close()
-    except RuntimeError:
-        pass
-    # Create a fresh event loop and immediately remove it
-    # This ensures asyncio._get_running_loop() returns None
-    try:
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        new_loop.close()
-        asyncio.set_event_loop(None)
-    except:
-        pass
-    # Also patch the running loop detection
+    """Start sync_playwright safely — clears any asyncio running loop first.
+    httpx or previous Playwright instances may leave a running event loop."""
+    # Clear the running loop flag so Playwright's check passes
     try:
         asyncio._set_running_loop(None)
-    except (AttributeError, RuntimeError):
+    except:
         pass
+    # Also close any stale event loop in this thread
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            asyncio.set_event_loop(asyncio.new_event_loop())
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    
     from playwright.sync_api import sync_playwright
     return sync_playwright().start()
 
