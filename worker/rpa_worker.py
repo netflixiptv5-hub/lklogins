@@ -180,9 +180,9 @@ def _post_job_cleanup(job_id: str):
             os._exit(1)  # Railway will auto-restart
 
 def _periodic_cleanup_loop():
-    """Background thread: every 10 min kill zombie chromes + gc + memory check."""
+    """Background thread: every 3 min kill zombie chromes + gc + memory check."""
     while True:
-        time.sleep(600)  # 10 min (was 30)
+        time.sleep(180)  # 3 min
         try:
             mem_mb = _get_memory_mb()
             chrome_count = _count_chrome_procs()
@@ -4490,7 +4490,7 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 _active_jobs = {}  # job_id -> {"email": str, "started": float}
 _active_jobs_lock = threading.Lock()
 # Queue has no hard limit — jobs are queued and processed in order
-# Each job has 5min timeout, stuck jobs cleaned every 5min
+# Each job has 5min timeout, stuck jobs cleaned every 3min
 
 def _tracked_process_job(job_id, email_addr, service):
     """Wrapper that tracks active jobs."""
@@ -4502,16 +4502,16 @@ def _tracked_process_job(job_id, email_addr, service):
         with _active_jobs_lock:
             _active_jobs.pop(job_id, None)
 
-# Cleanup stuck jobs every 5 min — mark as error if running > 6 min
+# Cleanup stuck jobs every 3 min — mark as error if running > 5 min (300s)
 def _job_queue_cleanup_loop():
     while True:
-        time.sleep(300)  # 5 min
+        time.sleep(180)  # 3 min
         try:
             now = time.time()
             with _active_jobs_lock:
-                stuck = [jid for jid, info in _active_jobs.items() if now - info["started"] > 360]
+                stuck = [jid for jid, info in _active_jobs.items() if now - info["started"] > 300]
             for jid in stuck:
-                logger.warning(f"[QUEUE-CLEANUP] Job {jid} stuck > 6min, marking error")
+                logger.warning(f"[QUEUE-CLEANUP] Job {jid} stuck > 5min, marking error")
                 update_job(jid, "error", message="Job travou na fila. Tente novamente.")
                 with _active_jobs_lock:
                     _active_jobs.pop(jid, None)
@@ -4725,7 +4725,7 @@ if __name__ == "__main__":
     
     # Periodic memory/process cleanup every 10 min
     threading.Thread(target=_periodic_cleanup_loop, daemon=True).start()
-    logger.info("[STARTUP] Periodic cleanup thread started (every 10 min)")
+    logger.info("[STARTUP] Periodic cleanup thread started (every 3 min)")
     
     # Periodic /tmp cleanup every 20 min (screenshots, playwright temp files)
     def _tmp_cleanup_loop():
