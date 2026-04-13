@@ -4458,6 +4458,42 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
 
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
+# Track active/queued jobs to prevent queue buildup
+_active_jobs = {}  # job_id -> {"email": str, "started": float}
+_active_jobs_lock = threading.Lock()
+MAX_QUEUE_SIZE = 4  # Max jobs allowed (2 running + 2 queued)
+
+def _tracked_process_job(job_id, email_addr, service):
+    """Wrapper that tracks active jobs."""
+    with _active_jobs_lock:
+        _active_jobs[job_id] = {"email": email_addr, "started": time.time()}
+    try:
+        process_job(job_id, email_addr, service)
+    finally:
+        with _active_jobs_lock:
+            _active_jobs.pop(job_id, None)
+
+# Cleanup stuck jobs every 5 min — mark as error if running > 6 min
+def _job_queue_cleanup_loop():
+    while True:
+        time.sleep(300)  # 5 min
+        try:
+            now = time.time()
+            with _active_jobs_lock:
+                stuck = [jid for jid, info in _active_jobs.items() if now - info["started"] > 360]
+            for jid in stuck:
+                logger.warning(f"[QUEUE-CLEANUP] Job {jid} stuck > 6min, marking error")
+                update_job(jid, "error", message="Job travou na fila. Tente novamente.")
+                with _active_jobs_lock:
+                    _active_jobs.pop(jid, None)
+            with _active_jobs_lock:
+                count = len(_active_jobs)
+            logger.info(f"[QUEUE-CLEANUP] Active jobs: {count}")
+        except Exception as e:
+            logger.error(f"[QUEUE-CLEANUP] Error: {e}")
+
+threading.Thread(target=_job_queue_cleanup_loop, daemon=True).start()
+
 
 class JobHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -4470,7 +4506,19 @@ class JobHandler(BaseHTTPRequestHandler):
                 service = body.get("service")
 
                 if job_id and email_addr and service:
-                    executor.submit(process_job, job_id, email_addr, service)
+                    # Check queue size — reject if too many
+                    with _active_jobs_lock:
+                        queue_size = len(_active_jobs)
+                    if queue_size >= MAX_QUEUE_SIZE:
+                        logger.warning(f"[{job_id}] Queue full ({queue_size}/{MAX_QUEUE_SIZE}), rejecting")
+                        update_job(job_id, "error", message="Servidor ocupado. Aguarde 1 minuto e tente novamente.")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"ok": True, "queued": False, "reason": "queue_full"}).encode())
+                        return
+                    
+                    executor.submit(_tracked_process_job, job_id, email_addr, service)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()

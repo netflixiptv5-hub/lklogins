@@ -14,12 +14,21 @@ function generateJobId() {
   return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 }
 
-// Cleanup old jobs every 5 min
+// Cleanup old jobs every 5 min — delete finished jobs after 10min, stuck jobs after 15min
 setInterval(() => {
   const now = Date.now();
   for (const [id, j] of jobs) {
-    if (now - j.createdAt > 30 * 60 * 1000) jobs.delete(id);
+    const age = now - j.createdAt;
+    // Finished jobs (success/error/not_found) — remove after 10 min
+    if (["done", "error", "not_found"].includes(j.status) && age > 10 * 60 * 1000) {
+      jobs.delete(id);
+    }
+    // ANY job older than 15 min — force remove (prevents stuck queue)
+    else if (age > 15 * 60 * 1000) {
+      jobs.delete(id);
+    }
   }
+  console.log(`[CLEANUP] Jobs in memory: ${jobs.size}`);
 }, 5 * 60 * 1000);
 
 // === API Routes ===
