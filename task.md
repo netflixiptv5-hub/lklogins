@@ -1,25 +1,17 @@
-# Task: CAPTCHA Solver para LKLogins
+# LKLOGINS Fix — Verification Loop & Timeout
 
-## Diagnóstico dos logs (job a5ftw8vhb7pmns90bs6)
-1. UC login OK, chegou na abuse page OK
-2. Clicou "Next" OK
-3. iframe hsprotect.net encontrado mas **size=0x0**
-4. _find_captcha_iframe retornou None (exige width > 50)
-5. Na tentativa 2, Chrome crashou (Connection refused port 44029)
+## Bugs found
+1. **handle_verification codes accepted but MS loops** — after entering correct code, MS shows verification page AGAIN → system marks as failure → falls to code_login → tries 50 candidates × 120s each
+2. **code_login ignores global timeout** — `_timed_out` is local to `process_job`, code_login thread keeps running for 10+ minutes after timeout
+3. **50 recovery candidates** — way too many, wastes time on impossible matches
 
-## Diferença DARKSAGE vs captcha_solver.py
-- DARKSAGE: roda no Windows com display real, iframe renderiza width > 50
-- captcha_solver.py: roda no Railway (Linux) com Xvfb, iframe fica 0x0
-- O `resolver_pressione_segure` do DARKSAGE é identico em lógica
-- A diferença é o AMBIENTE, não o código
+## Fixes applied
+- [x] Added global `_cancelled_jobs` dict — timeout handler calls `_cancel_job(job_id)`
+- [ ] Make `process_job_code_login` check `_is_job_cancelled()` before each candidate
+- [ ] Limit candidates to max 5 in code_login
+- [ ] After handle_verification succeeds with code but MS loops back → detect this as "MS rate limiting" and DON'T try code_login (it'll be same result)
+- [ ] Set `_cancel_job` in timeout handler
+- [ ] Clean up cancelled flag in finally block
 
-## Ideia do usuário
-Fazer um serviço EXTERNO (micro-API) que roda numa máquina com display real
-O lklogins manda sinal → serviço externo resolve → devolve resultado
-
-## Plano: Adaptar DARKSAGE como micro-API de CAPTCHA
-1. Criar `captcha_service.py` — Flask/FastAPI que expõe endpoint POST /solve
-2. Recebe: email, password, abuse_url
-3. Abre UC Chrome local (máquina do user com display real)
-4. Faz login → resolve CAPTCHA → retorna {solved: true/false}
-5. No lklogins, quando abuse, chama esse serviço externo via HTTP
+## Files
+- worker/rpa_worker.py — all changes here

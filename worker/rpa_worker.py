@@ -3916,11 +3916,17 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
         masked = re.search(r'(\w{1,10})\*+@', body)
         prefix = masked.group(1) if masked else ""
         candidates = _get_recovery_candidates(email_addr, prefix)
+        # Limit to max 5 candidates — trying 50 wastes time and triggers MS rate limits
+        candidates = candidates[:5]
         logger.info(f"[{job_id}] Code login: hint={prefix}***, candidates={candidates}")
 
         # === STEP 3: Try each recovery email ===
         code_obtained = False
         for recovery in candidates:
+            # Check if job was cancelled (timeout)
+            if _is_job_cancelled(job_id):
+                logger.warning(f"[{job_id}] Code login: job cancelled (timeout), stopping")
+                return True  # Don't try other methods
             logger.info(f"[{job_id}] Trying recovery: {recovery}")
 
             # Check if this is a Gmail with direct IMAP access
@@ -3968,12 +3974,12 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
             if _use_gmail_direct:
                 # Read directly from Gmail — much faster than waiting for forwarding
-                code = _gmail_imap_get_code(recovery, min_id=max_id_before, max_wait=120)
+                code = _gmail_imap_get_code(recovery, min_id=max_id_before, max_wait=60)
             else:
-                code = _imap_get_new_code(min_id=max_id_before, target_to=recovery, max_wait=120)
+                code = _imap_get_new_code(min_id=max_id_before, target_to=recovery, max_wait=60)
                 if not code:
                     # Broad search (catchall might receive with different TO)
-                    code = _imap_get_new_code(min_id=max_id_before, target_to="", max_wait=30)
+                    code = _imap_get_new_code(min_id=max_id_before, target_to="", max_wait=20)
 
             if code:
                 logger.info(f"[{job_id}] Got code: {code}")
@@ -4047,6 +4053,10 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
                 break
             else:
                 logger.warning(f"[{job_id}] Code not received for {recovery}")
+                # Check cancellation before trying next candidate
+                if _is_job_cancelled(job_id):
+                    logger.warning(f"[{job_id}] Code login: job cancelled after failed attempt, stopping")
+                    return True
                 continue
 
         if not code_obtained:
@@ -4133,6 +4143,7 @@ def process_job(job_id: str, email_addr: str, service: str):
         """Background thread that kills the job if it takes too long."""
         time.sleep(JOB_TIMEOUT)
         _timed_out[0] = True
+        _cancel_job(job_id)  # Signal code_login and other loops to stop
         logger.error(f"[{job_id}] JOB TIMEOUT after {JOB_TIMEOUT}s — forcing cleanup")
         update_job(job_id, "error", message=f"Timeout após {JOB_TIMEOUT//60}min. Tente novamente.")
         # Kill Chrome processes aggressively
@@ -4155,6 +4166,7 @@ def process_job(job_id: str, email_addr: str, service: str):
                 logger.error(f"[{job_id}] Unhandled error: {err_str[:300]}")
                 update_job(job_id, "error", message="Erro interno. Tente novamente.")
     finally:
+        _clear_cancelled(job_id)
         _post_job_cleanup(job_id)
 
 def _process_job_inner(job_id: str, email_addr: str, service: str):
@@ -4479,6 +4491,19 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                 update_job(job_id, "connecting", eta=50,
                            message="Verificação Microsoft. Aguarde...")
                 if not handle_verification(page, job_id, username):
+                    # Check if MS is looping (code was entered but MS asked again)
+                    # In this case, code_login will have the same problem — skip it
+                    _page_body = ""
+                    try:
+                        _page_body = page.inner_text("body").lower()
+                    except:
+                        pass
+                    _is_loop = "protect your account" in _page_body or "identity" in page.url.lower()
+                    if _is_loop:
+                        logger.warning(f"[{job_id}] MS verification loop detected — code login won't help, giving up")
+                        update_job(job_id, "error",
+                            message="Microsoft está pedindo verificação em loop. Tente novamente em alguns minutos.")
+                        return
                     # Verificação falhou — tenta code login como fallback
                     logger.info(f"[{job_id}] Verificação falhou, vai tentar code login...")
                     _playwright_password_fail = True
@@ -4544,6 +4569,22 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 # Track active/queued jobs to prevent queue buildup
 _active_jobs = {}  # job_id -> {"email": str, "started": float}
 _active_jobs_lock = threading.Lock()
+
+# Global cancellation flags — set by timeout handler, checked by code_login
+_cancelled_jobs = {}  # job_id -> True
+_cancelled_jobs_lock = threading.Lock()
+
+def _is_job_cancelled(job_id: str) -> bool:
+    with _cancelled_jobs_lock:
+        return _cancelled_jobs.get(job_id, False)
+
+def _cancel_job(job_id: str):
+    with _cancelled_jobs_lock:
+        _cancelled_jobs[job_id] = True
+
+def _clear_cancelled(job_id: str):
+    with _cancelled_jobs_lock:
+        _cancelled_jobs.pop(job_id, None)
 _last_job_completed_at = time.time()  # track last successful job completion
 _last_job_completed_lock = threading.Lock()
 
