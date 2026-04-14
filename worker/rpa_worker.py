@@ -1606,6 +1606,8 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                 
                 if not _phone_bypassed:
                     logger.warning(f"[{job_id}] Phone-only verification, no email options found. Giving up.")
+                    update_job(job_id, "error",
+                        message="PHONE_ONLY: Esta conta só tem verificação por telefone e não possui email alternativo cadastrado. Adicione um email de recuperação nas configurações da conta Microsoft.")
                     return False
         
         # === RESOLVE RECOVERY EMAIL ===
@@ -4491,6 +4493,18 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                 update_job(job_id, "connecting", eta=50,
                            message="Verificação Microsoft. Aguarde...")
                 if not handle_verification(page, job_id, username):
+                    # Check if PHONE_ONLY was already set — if so, don't override with other messages
+                    _current_msg = ""
+                    try:
+                        _status_req = urllib.request.urlopen(f"{API_BASE}/api/status/{job_id}", timeout=3)
+                        _status_data = json.loads(_status_req.read().decode())
+                        _current_msg = _status_data.get("message", "") or ""
+                    except:
+                        pass
+                    if "PHONE_ONLY" in _current_msg:
+                        logger.warning(f"[{job_id}] Phone-only account — stopping, no fallback needed")
+                        return
+                    
                     # Check if MS is looping (code was entered but MS asked again)
                     # In this case, code_login will have the same problem — skip it
                     _page_body = ""
