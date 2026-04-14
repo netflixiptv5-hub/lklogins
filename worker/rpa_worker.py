@@ -635,21 +635,8 @@ def extract_email_content(html: str, service: str) -> dict | None:
                 link = m[0].replace("&amp;", "&").replace("&#x3D;", "=")
                 return {"link": link}
 
-        # FORMATO ANTIGO: código numérico direto no email
-        def _is_likely_code(s):
-            if re.match(r'^(19|20)\d{2}$', s):
-                return False
-            return True
-
-        for pat in [
-            r'style="[^"]*font-size:\s*(?:2[4-9]|3[0-9]|4[0-9])[^"]*"[^>]*>\s*(\d{4,8})\s*<',
-            r'<td[^>]*>\s*(\d{4,8})\s*</td>',
-            r'(?:código|code|access code)[^<]{0,50}?(\d{4,8})',
-            r'<(?:p|span|div)[^>]*>\s*(\d{4,8})\s*</(?:p|span|div)>',
-        ]:
-            m = [x for x in re.findall(pat, html, re.IGNORECASE) if _is_likely_code(x)]
-            if m:
-                return {"code": m[0].strip()}
+        # FORMATO ANTIGO removido — só retorna links, nunca códigos de 4 dígitos
+        # Códigos soltos no email não são úteis, o cliente precisa do link "Receber código"
 
     if service == "netflix_disconnect":
         # 6-digit code from "Confirme a alteração da sua conta com este código"
