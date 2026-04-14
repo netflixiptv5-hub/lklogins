@@ -81,7 +81,7 @@ KNOWN_RECOVERY_EMAILS = [
 ]
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
-MAX_WORKERS = 2
+MAX_WORKERS = 3
 SEARCH_MINUTES = 15
 
 # === TELEGRAM ALERTS ===
@@ -241,7 +241,7 @@ def _post_job_cleanup(job_id: str):
     # Check if memory is critical — if so, force restart
     mem_mb = _get_memory_mb()
     logger.info(f"[{job_id}] Post-job RSS: {mem_mb:.0f} MB")
-    if mem_mb > 450:
+    if mem_mb > 500:
         logger.critical(f"[{job_id}] MEMORY CRITICAL ({mem_mb:.0f}MB) — forcing full cleanup")
         _cleanup_zombie_chrome(force=True)
         gc.collect()
@@ -249,7 +249,7 @@ def _post_job_cleanup(job_id: str):
         # If still too high after cleanup, exit to let Railway restart
         time.sleep(1)
         mem_after = _get_memory_mb()
-        if mem_after > 400:
+        if mem_after > 450:
             logger.critical(f"[{job_id}] Still at {mem_after:.0f}MB after cleanup — RESTARTING")
             send_alert(f"⚠️ Memória alta ({mem_after:.0f}MB) no job {job_id}\nReiniciando automaticamente...")
             os._exit(1)  # Railway will auto-restart
@@ -4136,7 +4136,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 def process_job(job_id: str, email_addr: str, service: str):
     """Main job processor — wrapper with cleanup and global timeout."""
     
-    JOB_TIMEOUT = 240  # 4 min max per job
+    JOB_TIMEOUT = 150  # 2.5 min max per job — libera slot rápido
     _timed_out = [False]
     
     def _timeout_handler():

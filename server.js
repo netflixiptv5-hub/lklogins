@@ -25,20 +25,20 @@ setInterval(() => {
       jobs.delete(id);
       cleaned++;
     }
-    // Jobs stuck in "connecting" for > 2.5 min — worker probably died/restarted
-    else if (j.status === "connecting" && age > 150_000) {
+    // Jobs stuck in "connecting" for > 2 min — worker probably died/restarted
+    else if (j.status === "connecting" && age > 120_000) {
       j.status = "error";
       j.message = "Servidor reiniciou. Tente novamente.";
       cleaned++;
     }
-    // Jobs stuck in "searching" for > 4 min — something went wrong
-    else if (j.status === "searching" && age > 240_000) {
+    // Jobs stuck in "searching" for > 3 min — something went wrong
+    else if (j.status === "searching" && age > 180_000) {
       j.status = "error";
       j.message = "Timeout na busca. Tente novamente.";
       cleaned++;
     }
-    // ANY job older than 10 min — force remove
-    else if (age > 10 * 60 * 1000) {
+    // ANY job older than 5 min — force remove
+    else if (age > 5 * 60 * 1000) {
       jobs.delete(id);
       cleaned++;
     }
