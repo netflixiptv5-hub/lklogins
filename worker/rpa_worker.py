@@ -197,13 +197,19 @@ def _cleanup_zombie_chrome(force=False):
             active_count = len(_active_jobs)
         
         # Kill chrome if: forced, too many procs, high mem, or no active jobs with orphan procs
-        should_kill = force or count > 4 or mem_mb > 300 or (count > 0 and active_count == 0)
+        # NEVER kill chrome while jobs are running (unless memory is critical)
+        if active_count > 0:
+            should_kill = force or mem_mb > 500
+        else:
+            should_kill = force or count > 0 or mem_mb > 400
         
         if should_kill:
             logger.warning(f"[CLEANUP] Killing chrome — procs={count}, mem={mem_mb:.0f}MB, active_jobs={active_count}")
-            # Only kill chrome/chromium, NOT playwright driver
-            for pattern in ["chrome", "chromium", "headless_shell"]:
-                subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True, timeout=5)
+            # Only kill chrome/chromium browsers, NOT playwright run-driver
+            subprocess.run(
+                ["bash", "-c", "ps aux | grep -E 'chrom|headless_shell' | grep -v 'run-driver' | grep -v grep | awk '{print $2}' | xargs -r kill -9"],
+                capture_output=True, timeout=5
+            )
             time.sleep(0.5)
             after_count = _count_chrome_procs()
             after_mem = _get_memory_mb()
