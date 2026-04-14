@@ -81,7 +81,7 @@ KNOWN_RECOVERY_EMAILS = [
 ]
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
-MAX_WORKERS = 3
+MAX_WORKERS = 10
 SEARCH_MINUTES = 15
 
 # === TELEGRAM ALERTS ===
@@ -199,9 +199,9 @@ def _cleanup_zombie_chrome(force=False):
         # Kill chrome if: forced, too many procs, high mem, or no active jobs with orphan procs
         # NEVER kill chrome while jobs are running (unless memory is critical)
         if active_count > 0:
-            should_kill = force or mem_mb > 500
+            should_kill = force or mem_mb > 2000
         else:
-            should_kill = force or count > 0 or mem_mb > 400
+            should_kill = force or count > 0 or mem_mb > 1500
         
         if should_kill:
             logger.warning(f"[CLEANUP] Killing chrome — procs={count}, mem={mem_mb:.0f}MB, active_jobs={active_count}")
@@ -241,7 +241,7 @@ def _post_job_cleanup(job_id: str):
     # Check if memory is critical — if so, force restart
     mem_mb = _get_memory_mb()
     logger.info(f"[{job_id}] Post-job RSS: {mem_mb:.0f} MB")
-    if mem_mb > 500:
+    if mem_mb > 2000:
         logger.critical(f"[{job_id}] MEMORY CRITICAL ({mem_mb:.0f}MB) — forcing full cleanup")
         _cleanup_zombie_chrome(force=True)
         gc.collect()
@@ -249,7 +249,7 @@ def _post_job_cleanup(job_id: str):
         # If still too high after cleanup, exit to let Railway restart
         time.sleep(1)
         mem_after = _get_memory_mb()
-        if mem_after > 450:
+        if mem_after > 1800:
             logger.critical(f"[{job_id}] Still at {mem_after:.0f}MB after cleanup — RESTARTING")
             send_alert(f"⚠️ Memória alta ({mem_after:.0f}MB) no job {job_id}\nReiniciando automaticamente...")
             os._exit(1)  # Railway will auto-restart
@@ -280,7 +280,7 @@ def _periodic_cleanup_loop():
             logger.info(f"[PERIODIC] After cleanup RSS: {mem_after:.0f} MB")
             
             # Emergency restart if memory won't go down
-            if mem_after > 450:
+            if mem_after > 2000:
                 logger.critical(f"[PERIODIC] Memory too high ({mem_after:.0f}MB) — RESTARTING")
                 send_alert(f"⚠️ Memória crítica ({mem_after:.0f}MB)\nReiniciando automaticamente...")
                 _cleanup_zombie_chrome(force=True)
