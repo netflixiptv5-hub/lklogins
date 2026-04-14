@@ -4529,6 +4529,37 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
             # === SAVE COOKIES after successful login ===
             try:
                 login_cookies = context.cookies()
+                # Verifica se tem o cookie persistente (ESTSAUTHPERSISTENT)
+                _cookie_names = [c.get("name", "") for c in login_cookies]
+                _has_persistent = "ESTSAUTHPERSISTENT" in _cookie_names
+                if not _has_persistent:
+                    # Força navegação pro account.live.com pra gerar cookie persistente
+                    logger.info(f"[{job_id}] Sem ESTSAUTHPERSISTENT, forçando geração...")
+                    try:
+                        page.goto("https://account.live.com/", timeout=15000, wait_until="domcontentloaded")
+                        time.sleep(2)
+                        # Tenta clicar "Stay signed in" / "Sim" se aparecer
+                        for _stay_sel in ["#idSIButton9", "#acceptButton"]:
+                            try:
+                                _stay_btn = page.locator(_stay_sel)
+                                if _stay_btn.is_visible(timeout=2000):
+                                    _stay_btn.click(no_wait_after=True, timeout=3000)
+                                    time.sleep(2)
+                                    break
+                            except:
+                                continue
+                        login_cookies = context.cookies()
+                        _cookie_names = [c.get("name", "") for c in login_cookies]
+                        _has_persistent = "ESTSAUTHPERSISTENT" in _cookie_names
+                        logger.info(f"[{job_id}] Após account.live.com: ESTSAUTHPERSISTENT={'SIM' if _has_persistent else 'NÃO'} ({len(login_cookies)} cookies)")
+                        # Volta pro Outlook
+                        page.goto("https://outlook.live.com/mail/0/", timeout=20000, wait_until="domcontentloaded")
+                        time.sleep(2)
+                    except Exception as _pe:
+                        logger.warning(f"[{job_id}] Erro ao forçar cookie persistente: {_pe}")
+                else:
+                    logger.info(f"[{job_id}] ESTSAUTHPERSISTENT presente! ({len(login_cookies)} cookies)")
+                
                 save_cookies(email_addr, login_cookies)
                 logger.info(f"[{job_id}] Cookies salvos após login ({len(login_cookies)} cookies)")
                 # Tenta extrair token OAuth dos cookies pra acelerar próximas chamadas via IMAP
