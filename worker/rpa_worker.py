@@ -4501,7 +4501,51 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                         pass
                     _is_loop = "protect your account" in _page_body or "identity" in page.url.lower()
                     if _is_loop:
-                        logger.warning(f"[{job_id}] MS verification loop detected — code login won't help, giving up")
+                        # Tenta UMA vez mais: fecha browser, espera, reloga
+                        if not getattr(create_driver, '_loop_retried', {}).get(job_id):
+                            if not hasattr(create_driver, '_loop_retried'):
+                                create_driver._loop_retried = {}
+                            create_driver._loop_retried[job_id] = True
+                            logger.warning(f"[{job_id}] MS verification loop — retrying in 10s...")
+                            update_job(job_id, "connecting", eta=40,
+                                message="Verificação em loop. Tentando novamente...")
+                            time.sleep(10)
+                            # Limpa cookies dessa conta (forçar login fresh)
+                            delete_cookies(email_addr)
+                            # Relança o browser
+                            try:
+                                context.close()
+                                browser.close()
+                            except:
+                                pass
+                            browser, context, page = launch_browser()
+                            ok = fast_login(page, email_addr, job_id)
+                            if ok:
+                                state = handle_post_login(page, job_id)
+                                if state == "ok":
+                                    # Login OK! Continua o fluxo normal
+                                    logger.info(f"[{job_id}] Loop retry: login OK!")
+                                    # Salva cookies e vai buscar email
+                                    update_job(job_id, "logged_in", method="playwright", eta=15)
+                                    try:
+                                        login_cookies = context.cookies()
+                                        save_cookies(email_addr, login_cookies)
+                                    except:
+                                        pass
+                                    update_job(job_id, "searching", method="playwright", eta=10)
+                                    result = search_and_extract(page, service, patterns, job_id, email_addr=email_addr)
+                                    if result:
+                                        update_job(job_id, "found",
+                                            link=result.get("link"), code=result.get("code"),
+                                            method="playwright", expired=result.get("expired", False))
+                                    else:
+                                        update_job(job_id, "not_found",
+                                            message="Nenhum email encontrado. Reenvie a solicitação e tente novamente.")
+                                    return
+                                elif state == "verification":
+                                    logger.warning(f"[{job_id}] Loop retry: still verification, giving up")
+                        
+                        logger.warning(f"[{job_id}] MS verification loop detected — giving up")
                         update_job(job_id, "error",
                             message="Microsoft está pedindo verificação em loop. Tente novamente em alguns minutos.")
                         return
