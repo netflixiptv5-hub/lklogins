@@ -197,11 +197,11 @@ def _cleanup_zombie_chrome(force=False):
             active_count = len(_active_jobs)
         
         # Kill chrome if: forced, too many procs, high mem, or no active jobs with orphan procs
-        # NEVER kill chrome while jobs are running (unless memory is critical)
+        # More aggressive: kill if too many procs even with active jobs
         if active_count > 0:
-            should_kill = force or mem_mb > 2000
+            should_kill = force or mem_mb > 1200 or count > (active_count * 8)
         else:
-            should_kill = force or count > 0 or mem_mb > 1500
+            should_kill = force or count > 0 or mem_mb > 800
         
         if should_kill:
             logger.warning(f"[CLEANUP] Killing chrome — procs={count}, mem={mem_mb:.0f}MB, active_jobs={active_count}")
