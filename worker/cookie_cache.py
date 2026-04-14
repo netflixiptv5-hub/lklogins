@@ -19,8 +19,8 @@ DATABASE_URL = os.environ.get(
 _db_conn = None
 _use_db = True
 
-# Cookies expiram após 7 dias no cache (mesmo que MS permita mais)
-MAX_AGE_SECONDS = 7 * 24 * 3600
+# Cookies expiram após 30 dias no cache (MS ESTSAUTHPERSISTENT dura até 90 dias)
+MAX_AGE_SECONDS = 30 * 24 * 3600
 
 
 def _get_conn():
