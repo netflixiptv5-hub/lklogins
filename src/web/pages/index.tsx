@@ -631,35 +631,14 @@ export default function Index() {
                           </svg>
                         </div>
                         <h2 className="text-xl font-bold text-[#A855F7] mb-3">Conta Sem Email Alternativo</h2>
-                        <div className="bg-[#2D1B4E] rounded-lg p-5 text-left mb-4 border border-[#7C3AED]/40">
+                        <div className="bg-[#2D1B4E] rounded-lg p-5 text-center mb-4 border border-[#7C3AED]/40">
                           <p className="text-white text-sm font-semibold mb-3">⚠️ Esta conta só tem verificação por telefone!</p>
-                          <p className="text-[#C4B5FD] text-sm mb-4">
-                            A Microsoft está pedindo verificação por SMS/telefone e não existe email alternativo cadastrado nesta conta.
+                          <p className="text-[#C4B5FD] text-sm mb-5">
+                            Não é possível acessar esta conta automaticamente.
                           </p>
-                          <div className="bg-[#1a1130] rounded p-3 border border-[#7C3AED]/30 mb-3">
-                            <p className="text-[#A855F7] text-xs font-bold mb-2 uppercase tracking-wide">O que fazer:</p>
-                            <ul className="text-[#C4B5FD] text-sm space-y-2">
-                              <li className="flex items-start gap-2">
-                                <span className="text-[#A855F7] font-bold mt-0.5">1.</span>
-                                <span>Acesse <strong className="text-white">account.microsoft.com</strong> e faça login nesta conta</span>
-                              </li>
-                              <li className="flex items-start gap-2">
-                                <span className="text-[#A855F7] font-bold mt-0.5">2.</span>
-                                <span>Vá em <strong className="text-white">Segurança → Opções de verificação</strong></span>
-                              </li>
-                              <li className="flex items-start gap-2">
-                                <span className="text-[#A855F7] font-bold mt-0.5">3.</span>
-                                <span>Adicione um <strong className="text-white">email alternativo de recuperação</strong></span>
-                              </li>
-                              <li className="flex items-start gap-2">
-                                <span className="text-[#A855F7] font-bold mt-0.5">4.</span>
-                                <span>Depois volte aqui e tente novamente</span>
-                              </li>
-                            </ul>
+                          <div className="bg-[#1a1130] rounded-lg p-4 border border-[#7C3AED]/30">
+                            <p className="text-[#A855F7] text-lg font-bold">Contate seu ADM</p>
                           </div>
-                          <p className="text-[#8B7BB5] text-xs">
-                            Sem email alternativo, não é possível capturar os códigos/links automaticamente.
-                          </p>
                         </div>
                       </div>
                     )}
