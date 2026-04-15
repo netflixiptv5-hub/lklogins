@@ -4896,9 +4896,10 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                                 return
                         except:
                             pass
-                        update_job(job_id, "error",
-                            message="Microsoft está pedindo verificação em loop. Tente novamente em alguns minutos.")
-                        return
+                        # Em vez de desistir, tenta code_login como fallback
+                        logger.info(f"[{job_id}] MS loop — fallback para code_login...")
+                        _playwright_password_fail = True
+                        raise Exception("verification_loop_try_code")
                     # Verificação falhou — tenta code login como fallback
                     logger.info(f"[{job_id}] Verificação falhou, vai tentar code login...")
                     _playwright_password_fail = True
