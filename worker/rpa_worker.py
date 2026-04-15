@@ -4413,14 +4413,33 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         # === STEP 5: Navigate to Outlook ===
         if "outlook.live.com" not in page.url.lower():
-            page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
-            time.sleep(8)
+            try:
+                page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+                time.sleep(8)
+            except Exception as nav_err:
+                logger.warning(f"[{job_id}] Code login: goto mail/0/ failed ({nav_err}), retrying with new page...")
+                try:
+                    page = ctx.new_page()
+                    try:
+                        from playwright_stealth import Stealth
+                        Stealth().apply_stealth_sync(page)
+                    except:
+                        pass
+                    page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+                    time.sleep(8)
+                except Exception as nav_err2:
+                    logger.error(f"[{job_id}] Code login: retry also failed: {nav_err2}")
+                    update_job(job_id, "error", message="Login OK mas Outlook não carregou. Tente novamente.")
+                    return True
 
         # Se /mail/0/ falhou, tenta /mail/
         if "outlook.live.com/mail" not in page.url.lower():
             logger.info(f"[{job_id}] Code login: /mail/0/ falhou, tentando /mail/...")
-            page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
-            time.sleep(6)
+            try:
+                page.goto("https://outlook.live.com/mail/", timeout=25000, wait_until="domcontentloaded")
+                time.sleep(6)
+            except Exception as nav_err3:
+                logger.error(f"[{job_id}] Code login: /mail/ also crashed: {nav_err3}")
 
         if "outlook.live.com" not in page.url.lower():
             logger.error(f"[{job_id}] Code login: not on Outlook after login: {page.url}")
