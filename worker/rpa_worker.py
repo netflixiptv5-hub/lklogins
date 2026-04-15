@@ -1186,6 +1186,209 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
             except:
                 pass
     
+    # === NEW: "Verify your email" flow (MS sends code to recovery email) ===
+    # MS sometimes skips password entirely and shows "Verify your email" with email input + "Send code"
+    # After clicking Send code, shows "Enter your code" with 6 individual digit inputs
+    try:
+        _body_check = page.inner_text("body").lower()
+    except:
+        _body_check = ""
+    
+    _is_verify_email = ("verify your email" in _body_check or "verificar seu email" in _body_check or 
+                        "verifique seu email" in _body_check or "verificar o email" in _body_check or
+                        "verify this is your email" in _body_check)
+    _has_send_code = ("send code" in _body_check or "enviar código" in _body_check or "enviar codigo" in _body_check)
+    
+    if _is_verify_email and _has_send_code:
+        logger.info(f"[{job_id}] 'Verify your email' flow detected — will fill email and get code via IMAP")
+        
+        # Extract masked email hint from page (e.g. "ia*****@cinepremiu.com")
+        import re as _re
+        _masked_match = _re.search(r'([a-z]{1,4})\*+@([a-z0-9.]+)', _body_check)
+        _recovery_email = None
+        
+        if _masked_match:
+            _masked_prefix = _masked_match.group(1)
+            _masked_domain = _masked_match.group(2)
+            logger.info(f"[{job_id}] Masked email hint: {_masked_prefix}*****@{_masked_domain}")
+            
+            if "cinepremiu" in _masked_domain:
+                # For cinepremiu, the recovery email format is username@cinepremiu.com
+                _username_part = email_addr.split("@")[0]
+                _recovery_email = f"{_username_part}@cinepremiu.com"
+                logger.info(f"[{job_id}] Resolved recovery email: {_recovery_email}")
+        
+        if _recovery_email:
+            # Fill in the email field
+            try:
+                _email_input = page.locator("input[type=email], input[name=iProofEmail], input[placeholder*='Email'], input[placeholder*='email']").first
+                if _email_input.is_visible(timeout=3000):
+                    _email_input.fill(_recovery_email)
+                    logger.info(f"[{job_id}] Filled recovery email: {_recovery_email}")
+                    time.sleep(1)
+                    
+                    # Click Send code
+                    _send_ts = time.time()
+                    _sent = False
+                    for _btn_text in ["Send code", "Enviar código", "Enviar codigo", "Send"]:
+                        try:
+                            _btn = page.get_by_text(_btn_text, exact=False)
+                            if _btn.is_visible(timeout=1500):
+                                _btn.click()
+                                logger.info(f"[{job_id}] Clicked '{_btn_text}'")
+                                _sent = True
+                                time.sleep(4)
+                                break
+                        except:
+                            continue
+                    
+                    if not _sent:
+                        # Try button/input submit
+                        for _sel in ["input[type=submit]", "button[type=submit]", "#iNext"]:
+                            try:
+                                _el = page.locator(_sel).first
+                                if _el.is_visible(timeout=1000):
+                                    _el.click()
+                                    _sent = True
+                                    time.sleep(4)
+                                    break
+                            except:
+                                continue
+                    
+                    if _sent:
+                        # Now read code from IMAP
+                        _code = get_ms_verification_code(_recovery_email, job_id, max_wait=55, min_timestamp=_send_ts)
+                        
+                        if _code and _code != "UNUSUAL_ACTIVITY" and len(_code) >= 4:
+                            logger.info(f"[{job_id}] Got verification code: {_code}")
+                            
+                            # Check for 6 individual digit inputs (new MS UI)
+                            _digit_inputs = page.locator("input[aria-label*='digit'], input[aria-label*='code digit'], input[aria-label*='dígito']").all()
+                            
+                            if len(_digit_inputs) >= len(_code):
+                                # New UI: individual digit boxes
+                                logger.info(f"[{job_id}] Found {len(_digit_inputs)} individual digit inputs")
+                                for i, digit in enumerate(_code):
+                                    try:
+                                        _digit_inputs[i].click()
+                                        _digit_inputs[i].fill(digit)
+                                        time.sleep(0.2)
+                                    except Exception as _de:
+                                        logger.warning(f"[{job_id}] Error filling digit {i}: {_de}")
+                                time.sleep(1)
+                                # After filling last digit, MS may auto-submit or we need to press Enter
+                                page.keyboard.press("Enter")
+                            else:
+                                # Old UI: single text input for code
+                                _code_input = page.locator("input[name=iOttText], input[type=tel], input[name=iVerifyCode], input[type=text]").first
+                                try:
+                                    if _code_input.is_visible(timeout=3000):
+                                        _code_input.fill(_code)
+                                        logger.info(f"[{job_id}] Filled code in single input")
+                                        time.sleep(1)
+                                        # Click verify/next
+                                        for _vt in ["Verify", "Verificar", "Next", "Avançar"]:
+                                            try:
+                                                _vb = page.get_by_text(_vt, exact=False)
+                                                if _vb.is_visible(timeout=1000):
+                                                    _vb.click()
+                                                    break
+                                            except:
+                                                continue
+                                        else:
+                                            page.keyboard.press("Enter")
+                                except:
+                                    # Last resort: just type the code
+                                    page.keyboard.type(_code)
+                                    page.keyboard.press("Enter")
+                            
+                            time.sleep(5)
+                            
+                            # Check if we're now on "Stay signed in?" or inbox
+                            try:
+                                _post_body = page.inner_text("body").lower()
+                                _post_url = page.url.lower()
+                                logger.info(f"[{job_id}] After code entry: URL={_post_url}, body={_post_body[:200]}")
+                                
+                                if "stay signed in" in _post_body or "manter-se conectado" in _post_body or "permanecer conectado" in _post_body:
+                                    # Click Yes/No
+                                    for _stay_text in ["Yes", "Sim", "No", "Não"]:
+                                        try:
+                                            _stay_btn = page.get_by_text(_stay_text, exact=True)
+                                            if _stay_btn.is_visible(timeout=2000):
+                                                _stay_btn.click()
+                                                logger.info(f"[{job_id}] Clicked '{_stay_text}' on stay signed in")
+                                                time.sleep(3)
+                                                break
+                                        except:
+                                            continue
+                                    return True
+                                
+                                if "outlook" in _post_url or "live.com/mail" in _post_url or "office" in _post_url:
+                                    logger.info(f"[{job_id}] Successfully logged in via verify email flow!")
+                                    return True
+                                
+                                # Check if password field appeared (some accounts go to password after code)
+                                try:
+                                    _pwd_after = page.locator("input[type=password]")
+                                    if _pwd_after.is_visible(timeout=3000):
+                                        logger.info(f"[{job_id}] Password field appeared after code verification")
+                                        # Fall through to normal password handling below
+                                except:
+                                    pass
+                                    
+                            except:
+                                pass
+                        else:
+                            logger.error(f"[{job_id}] Failed to get verification code from IMAP (got: {_code})")
+                    else:
+                        logger.error(f"[{job_id}] Could not find Send code button")
+            except Exception as _ve:
+                logger.error(f"[{job_id}] Error in verify email flow: {_ve}")
+    
+    # === "Enter your code" without prior "Verify your email" (already sent) ===
+    _is_enter_code = ("enter your code" in _body_check or "insira seu código" in _body_check or 
+                      "digite seu código" in _body_check or "enter code" in _body_check)
+    _has_digit_inputs = False
+    try:
+        _digit_check = page.locator("input[aria-label*='digit'], input[aria-label*='code digit'], input[aria-label*='dígito']")
+        _has_digit_inputs = _digit_check.count() >= 4
+    except:
+        pass
+    
+    if _is_enter_code and _has_digit_inputs and not (_is_verify_email and _has_send_code):
+        logger.info(f"[{job_id}] 'Enter your code' page with digit inputs — code was already sent")
+        # Code was already sent before, just need to read from IMAP
+        _username_part = email_addr.split("@")[0]
+        _recovery_email = f"{_username_part}@cinepremiu.com"
+        _code = get_ms_verification_code(_recovery_email, job_id, max_wait=55, min_timestamp=time.time() - 120)
+        
+        if _code and _code != "UNUSUAL_ACTIVITY" and len(_code) >= 4:
+            _digit_inputs = page.locator("input[aria-label*='digit'], input[aria-label*='code digit'], input[aria-label*='dígito']").all()
+            for i, digit in enumerate(_code):
+                if i < len(_digit_inputs):
+                    _digit_inputs[i].click()
+                    _digit_inputs[i].fill(digit)
+                    time.sleep(0.2)
+            page.keyboard.press("Enter")
+            time.sleep(5)
+            
+            try:
+                _post_body = page.inner_text("body").lower()
+                if "stay signed in" in _post_body or "manter-se conectado" in _post_body:
+                    for _stay_text in ["Yes", "Sim"]:
+                        try:
+                            _stay_btn = page.get_by_text(_stay_text, exact=True)
+                            if _stay_btn.is_visible(timeout=2000):
+                                _stay_btn.click()
+                                time.sleep(3)
+                                break
+                        except:
+                            continue
+                    return True
+            except:
+                pass
+    
     # Wait for password field
     try:
         pwd = page.locator("input[type=password]")
@@ -1995,14 +2198,48 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                         break
             
             if not code_input:
-                # Last resort: dump page info for debugging
-                all_inputs = page.locator("input").all()
-                for inp in all_inputs:
-                    try:
-                        attrs = f"id={inp.get_attribute('id')} name={inp.get_attribute('name')} type={inp.get_attribute('type')} visible={inp.is_visible()}"
-                        logger.info(f"[{job_id}] Input on page: {attrs}")
-                    except:
-                        pass
+                # Check for 6 individual digit inputs (new MS UI)
+                _digit_inputs_v = page.locator("input[aria-label*='digit'], input[aria-label*='code digit'], input[aria-label*='dígito']").all()
+                if len(_digit_inputs_v) >= len(code):
+                    logger.info(f"[{job_id}] Found {len(_digit_inputs_v)} individual digit inputs in handle_verification")
+                    for i, digit in enumerate(code):
+                        try:
+                            _digit_inputs_v[i].click()
+                            _digit_inputs_v[i].fill(digit)
+                            time.sleep(0.2)
+                        except Exception as _de:
+                            logger.warning(f"[{job_id}] Error filling digit {i}: {_de}")
+                    time.sleep(1)
+                    page.keyboard.press("Enter")
+                    time.sleep(5)
+                    
+                    final_url = page.url.lower()
+                    final_body = page.inner_text("body").lower()[:200]
+                    logger.info(f"[{job_id}] After digit code entry: url={final_url}, body={final_body}")
+                    
+                    if "stay signed in" in final_body or "manter-se conectado" in final_body or "permanecer conectado" in final_body:
+                        for _stay_text in ["Yes", "Sim", "No", "Não"]:
+                            try:
+                                _stay_btn = page.get_by_text(_stay_text, exact=True)
+                                if _stay_btn.is_visible(timeout=2000):
+                                    _stay_btn.click()
+                                    time.sleep(3)
+                                    break
+                            except:
+                                continue
+                        return True
+                    
+                    if "identity" not in final_url and "proofs" not in final_url:
+                        return True
+                else:
+                    # Last resort: dump page info for debugging
+                    all_inputs = page.locator("input").all()
+                    for inp in all_inputs:
+                        try:
+                            attrs = f"id={inp.get_attribute('id')} name={inp.get_attribute('name')} type={inp.get_attribute('type')} visible={inp.is_visible()}"
+                            logger.info(f"[{job_id}] Input on page: {attrs}")
+                        except:
+                            pass
             
             if code_input:
                 code_input.fill("")
