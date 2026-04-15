@@ -1547,10 +1547,17 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             if not _phone_bypassed:
                 body_text = page.inner_text("body").lower()
                 # Check if page has REAL email options (with @ in radio text, not just the word "email")
-                has_email_with_at = any(kw in body_text for kw in [
-                    "@cinepremiu", "@gmail", "@hotmail", "@outlook", "@yahoo",
-                    "send a code to your email", "enviar código para seu email",
-                ])
+                # Check for recovery email domains — exclude the account's own email
+                _acct_email_lower = email_addr.lower()
+                has_email_with_at = False
+                for _domain_kw in ["@cinepremiu", "@gmail", "@yahoo"]:
+                    # Find all occurrences of the domain keyword and check they're not just the account email
+                    if _domain_kw in body_text:
+                        # Make sure it's not just the account email appearing on the page
+                        _body_without_acct = body_text.replace(_acct_email_lower, "")
+                        if _domain_kw in _body_without_acct:
+                            has_email_with_at = True
+                            break
                 
                 # Check radio buttons for actual email addresses
                 has_email_radio = False
