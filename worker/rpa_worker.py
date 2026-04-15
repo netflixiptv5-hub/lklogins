@@ -81,7 +81,7 @@ KNOWN_RECOVERY_EMAILS = [
 ]
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
-MAX_WORKERS = 10
+MAX_WORKERS = 5
 SEARCH_MINUTES = 15
 _loop_retried_jobs = {}  # track MS verification loop retries per job_id
 
@@ -3542,10 +3542,14 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
                    "--disable-background-networking",
                    "--disable-default-apps", "--disable-sync",
                    "--disable-translate", "--no-first-run",
-                   "--js-flags=--max-old-space-size=256"]
+                   "--js-flags=--max-old-space-size=128",
+                       "--disable-software-rasterizer",
+                       "--renderer-process-limit=1",
+                       "--disable-features=TranslateUI",
+                       "--disable-ipc-flooding-protection"]
         )
         ctx = browser.new_context(
-            viewport={"width": 1920, "height": 1080},
+            viewport={"width": 1280, "height": 720},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         from playwright_stealth import Stealth
@@ -3874,10 +3878,14 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
                   "--disable-background-networking",
                   "--disable-default-apps", "--disable-sync",
                   "--disable-translate", "--no-first-run",
-                  "--js-flags=--max-old-space-size=256"]
+                  "--js-flags=--max-old-space-size=128",
+                       "--disable-software-rasterizer",
+                       "--renderer-process-limit=1",
+                       "--disable-features=TranslateUI",
+                       "--disable-ipc-flooding-protection"]
         )
         ctx = browser.new_context(
-            viewport={"width": 1920, "height": 1080},
+            viewport={"width": 1280, "height": 720},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
@@ -4236,10 +4244,14 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                        "--disable-background-networking",
                        "--disable-default-apps", "--disable-sync",
                        "--disable-translate", "--no-first-run",
-                       "--js-flags=--max-old-space-size=256"]
+                       "--js-flags=--max-old-space-size=128",
+                       "--disable-software-rasterizer",
+                       "--renderer-process-limit=1",
+                       "--disable-features=TranslateUI",
+                       "--disable-ipc-flooding-protection"]
             )
             ctx = b.new_context(
-                viewport={"width": 1920, "height": 1080},
+                viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             )
             from playwright_stealth import Stealth
@@ -4362,7 +4374,7 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                     except:
                         pass
                     context = browser.new_context(
-                        viewport={"width": 1920, "height": 1080},
+                        viewport={"width": 1280, "height": 720},
                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                     )
                     try:
@@ -4380,7 +4392,7 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                 except:
                     pass
                 context = browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
+                    viewport={"width": 1280, "height": 720},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 )
                 try:
