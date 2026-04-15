@@ -4681,6 +4681,14 @@ def _tracked_process_job(job_id, email_addr, service):
             update_job(job_id, "error", message="Erro interno. Tente novamente.")
         except:
             pass
+        # Alert on critical errors (thread/memory exhaustion)
+        if "can't start new thread" in str(e) or "Cannot allocate memory" in str(e) or "Resource temporarily unavailable" in str(e):
+            try:
+                send_alert(f"💀 CRASH: {e}\nJob: {job_id}\nEmail: {email_addr}\n\nServidor precisa de restart!")
+                # Force kill all chrome and try to recover
+                _kill_all_chrome()
+            except:
+                pass
     finally:
         with _active_jobs_lock:
             _active_jobs.pop(job_id, None)
