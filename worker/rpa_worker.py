@@ -576,6 +576,42 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60,
                                     # For cinepremiu catch-all, also check Subject for the account email
                                     pass  # still try to extract code
                         
+                        # Check subject first — detect "unusual activity" alerts (no code)
+                        subj_raw = msg.get("Subject", "")
+                        subj_decoded = ""
+                        try:
+                            for part_s, enc_s in decode_header(subj_raw):
+                                if isinstance(part_s, bytes):
+                                    subj_decoded += part_s.decode(enc_s or "utf-8", errors="ignore")
+                                else:
+                                    subj_decoded += part_s
+                        except:
+                            subj_decoded = str(subj_raw)
+                        
+                        subj_lower = subj_decoded.lower()
+                        _unusual_keywords = ["atividade de entrada incomum", "unusual sign-in activity",
+                                             "unusual activity", "atividade incomum", "sign-in activity"]
+                        _is_unusual_alert = any(kw in subj_lower for kw in _unusual_keywords)
+                        
+                        if _is_unusual_alert:
+                            # This is an alert, NOT a code. Check if there's also a code email.
+                            # If this is the ONLY recent email for this target, it means MS
+                            # didn't send a code — just an alert. Mark and keep waiting briefly.
+                            logger.info(f"[{job_id}] Found 'unusual activity' alert for {target_email} (no code in this email)")
+                            _found_ids.add(msg_id)
+                            # If we've been waiting >20s and only found alerts, fail fast
+                            if time.time() - start > 20:
+                                _only_alerts = True
+                                for checked_id in recent_ids:
+                                    if checked_id not in _found_ids:
+                                        _only_alerts = False
+                                        break
+                                if _only_alerts:
+                                    logger.warning(f"[{job_id}] Only 'unusual activity' alerts found for {target_email} — MS didn't send a code. Failing fast.")
+                                    mail.logout()
+                                    return "UNUSUAL_ACTIVITY"
+                            continue
+
                         body = ""
                         if msg.is_multipart():
                             for part in msg.walk():
@@ -1807,6 +1843,11 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             # Use _send_code_ts to only accept codes newer than when we clicked Send
             logger.info(f"[{job_id}] Code sent! Waiting for IMAP delivery...")
             code = get_ms_verification_code(recovery, job_id, max_wait=55, min_timestamp=_send_code_ts)
+            if code == "UNUSUAL_ACTIVITY":
+                logger.warning(f"[{job_id}] MS sent 'unusual activity' alert instead of code for {recovery}. Account may need manual review.")
+                update_job(job_id, "error",
+                    message="A Microsoft detectou atividade suspeita e não enviou código de verificação. A conta pode estar bloqueada temporariamente. Tente novamente mais tarde ou faça login manualmente primeiro.")
+                return False
             if not code:
                 logger.warning(f"[{job_id}] Code not received via IMAP for {recovery}")
                 
@@ -1896,6 +1937,11 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                         
                         logger.info(f"[{job_id}] Waiting for code via {alt_recovery}...")
                         code = get_ms_verification_code(alt_recovery, job_id, max_wait=40, min_timestamp=_alt_send_ts)
+                        if code == "UNUSUAL_ACTIVITY":
+                            logger.warning(f"[{job_id}] Unusual activity alert for {alt_recovery}")
+                            update_job(job_id, "error",
+                                message="A Microsoft detectou atividade suspeita e não enviou código. Tente novamente mais tarde.")
+                            return False
                         if code:
                             recovery = alt_recovery
                             logger.info(f"[{job_id}] Code received via {alt_recovery}! code={code}")
@@ -2020,6 +2066,10 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                                 time.sleep(10)
                                 # Get new code — must be newer than retry click
                                 new_code = get_ms_verification_code(recovery, job_id, max_wait=55, min_timestamp=_retry_ts)
+                                if new_code == "UNUSUAL_ACTIVITY":
+                                    logger.warning(f"[{job_id}] Unusual activity on retry")
+                                    update_job(job_id, "error", message="Microsoft detectou atividade suspeita. Tente mais tarde.")
+                                    return False
                                 if new_code and new_code != code:
                                     code_input2 = page.locator("input[type=tel], input[type=number], input[type=text][id*='iOttText'], input[id*='iOttText']").first
                                     if code_input2.is_visible(timeout=2000):
@@ -2107,6 +2157,10 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         if needs_code:
             logger.info(f"[{job_id}] Waiting for MS verification code via IMAP...")
             code = get_ms_verification_code(recovery, job_id, max_wait=50)
+            if code == "UNUSUAL_ACTIVITY":
+                logger.warning(f"[{job_id}] Unusual activity alert — no code sent")
+                update_job(job_id, "error", message="Microsoft detectou atividade suspeita e não enviou código. Tente mais tarde.")
+                return False
             if not code:
                 logger.error(f"[{job_id}] Code not received via IMAP")
                 return False
