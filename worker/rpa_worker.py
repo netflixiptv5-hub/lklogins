@@ -1879,29 +1879,21 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             
             # For @cinepremiu.com: prefer {username}@cinepremiu.com over catchall
             # because most accounts were created with username@cinepremiu.com as recovery
-            if "cinepremiu" in masked_domain and username.lower().startswith(masked_prefix.lower()):
-                recovery = f"{username}@cinepremiu.com"
-                logger.info(f"[{job_id}] cinepremiu domain + prefix matches username -> {recovery}")
+            if "cinepremiu" in masked_domain:
+                if username.lower().startswith(masked_prefix.lower()):
+                    recovery = f"{username}@cinepremiu.com"
+                    logger.info(f"[{job_id}] cinepremiu + prefix matches username -> {recovery}")
+                else:
+                    recovery = f"catchall@cinepremiu.com"
+                    logger.info(f"[{job_id}] cinepremiu but prefix '{masked_prefix}' != username '{username}', using catchall")
             else:
                 resolved = resolve_recovery_email(masked_prefix, masked_domain, job_id)
                 if resolved:
                     recovery = resolved
-            
-            if recovery == f"{username}@{RECOVERY_DOMAIN}" and "cinepremiu" not in masked_domain:
-                # fallback for non-cinepremiu domains
-                pass
-            elif "cinepremiu" in masked_domain and not username.lower().startswith(masked_prefix.lower()):
-                # username doesn't match prefix, try catchall
-                recovery = f"catchall@cinepremiu.com"
-                logger.info(f"[{job_id}] Domain is cinepremiu but prefix doesn't match username, using catchall")
-            else:
-                # Last resort: try simple guess
-                if "." in masked_domain and masked_domain.endswith(".com"):
-                    recovery = f"{masked_prefix}@{masked_domain}"
                 else:
-                    # Domain is truncated (e.g. "gm"), can't guess
-                    recovery = f"{masked_prefix}@{masked_domain}"
-                logger.warning(f"[{job_id}] Could not resolve, guessing: {recovery}")
+                    # Last resort: try simple guess
+                    recovery = f"{masked_prefix}@{masked_domain}" if "." in masked_domain else f"{masked_prefix}@{masked_domain}"
+                    logger.warning(f"[{job_id}] Could not resolve, guessing: {recovery}")
         
         logger.info(f"[{job_id}] Verification: using {recovery}")
         
