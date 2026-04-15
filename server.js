@@ -164,6 +164,15 @@ app.post("/api/captcha-click/:jobId", async (req, res) => {
   }
 });
 
+// Self-restart: process.exit triggers Railway auto-restart
+app.post("/api/self-restart", (req, res) => {
+  const secret = req.headers["x-restart-secret"];
+  if (secret !== "lk3401restart") return res.status(403).json({ ok: false });
+  console.log("[SELF-RESTART] Restarting in 2s...");
+  res.json({ ok: true, message: "Restarting..." });
+  setTimeout(() => process.exit(1), 2000);
+});
+
 // Worker calls this on startup — mark all pending jobs as error
 app.post("/api/worker-restart", (req, res) => {
   let cleaned = 0;
