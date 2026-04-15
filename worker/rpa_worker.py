@@ -1423,7 +1423,7 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             
             # Quick check: if the initial page has NO email option at all (no @ besides account email),
             # it's phone-only. Return PHONE_ONLY immediately to avoid crashes during bypass attempts.
-            _body_no_acct = body_text.replace(email_addr.lower(), "")
+            _body_no_acct = body_text.replace(f"{username}@hotmail.com", "").replace(f"{username}@outlook.com", "")
             _has_any_email_option = "@" in _body_no_acct
             if not _has_any_email_option:
                 # Double check: look for "email" keyword near a radio button
@@ -1562,14 +1562,10 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                 body_text = page.inner_text("body").lower()
                 # Check if page has REAL email options (with @ in radio text, not just the word "email")
                 # Check for recovery email domains — exclude the account's own email
-                _acct_email_lower = email_addr.lower()
+                _body_cleaned = body_text.replace(f"{username}@hotmail.com", "").replace(f"{username}@outlook.com", "")
                 has_email_with_at = False
                 for _domain_kw in ["@cinepremiu", "@gmail", "@yahoo"]:
-                    # Find all occurrences of the domain keyword and check they're not just the account email
-                    if _domain_kw in body_text:
-                        # Make sure it's not just the account email appearing on the page
-                        _body_without_acct = body_text.replace(_acct_email_lower, "")
-                        if _domain_kw in _body_without_acct:
+                    if _domain_kw in _body_cleaned:
                             has_email_with_at = True
                             break
                 
