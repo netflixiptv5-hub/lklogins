@@ -4978,11 +4978,15 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
     if _playwright_password_fail:
         try:
             logger.info(f"[{job_id}] Tentando code login como último recurso...")
+            # Garante que Chrome anterior morreu e Playwright tá limpo
+            _cleanup_zombie_chrome(force=True)
+            time.sleep(2)
+            gc.collect()
             if process_job_code_login(job_id, email_addr, service):
                 return  # Code login handled it
             logger.info(f"[{job_id}] Code login também falhou")
         except Exception as e:
-            logger.error(f"[{job_id}] Code login error: {e}")
+            logger.error(f"[{job_id}] Code login error: {traceback.format_exc()}")
     
     # Se chegou aqui, nada funcionou
     update_job(job_id, "error",
