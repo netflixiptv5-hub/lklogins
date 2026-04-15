@@ -83,6 +83,7 @@ _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
 MAX_WORKERS = 10
 SEARCH_MINUTES = 15
+_loop_retried_jobs = {}  # track MS verification loop retries per job_id
 
 # === TELEGRAM ALERTS ===
 _ALERT_BOT_TOKEN = os.environ.get("ALERT_BOT_TOKEN", "8701402389:AAGAj33V5dgLJp2JbP8QJUd9hXTSL2f0_TY")
@@ -4502,10 +4503,8 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                     _is_loop = "protect your account" in _page_body or "identity" in page.url.lower()
                     if _is_loop:
                         # Tenta UMA vez mais: fecha browser, espera, reloga
-                        if not getattr(create_driver, '_loop_retried', {}).get(job_id):
-                            if not hasattr(create_driver, '_loop_retried'):
-                                create_driver._loop_retried = {}
-                            create_driver._loop_retried[job_id] = True
+                        if not _loop_retried_jobs.get(job_id):
+                            _loop_retried_jobs[job_id] = True
                             logger.warning(f"[{job_id}] MS verification loop — retrying in 10s...")
                             update_job(job_id, "connecting", eta=40,
                                 message="Verificação em loop. Tentando novamente...")
