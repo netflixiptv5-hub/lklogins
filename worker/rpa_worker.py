@@ -723,22 +723,25 @@ def extract_email_content(html: str, service: str) -> dict | None:
         if not any(kw in html_lower for kw in ["globo", "globoplay"]):
             return None
         all_links = re.findall(r'href="(https?://[^"]+)"', html, re.IGNORECASE)
-        skip = ["unsubscribe", "privacy", ".png", ".jpg", ".gif", ".svg", "tracking", "beacon"]
+        skip = ["unsubscribe", "privacy", ".png", ".jpg", ".gif", ".svg", "tracking", "beacon",
+                "ajuda.globo", "help.globo", "faq.globo", "suporte.globo", "central de ajuda"]
+        # Priority 1: login.globo.com/recuperacaoSenha (exact reset link)
         for raw in all_links:
             link = raw.replace("&amp;", "&").replace("&#x3D;", "=")
             ll = link.lower()
             if any(s in ll for s in skip):
                 continue
-            if any(kw in ll for kw in ["redefinir", "reset", "password", "senha", "recover", "account"]):
+            if "login.globo.com/recuperacaosenha" in ll or "login.globo.com/recuperacao" in ll:
                 return {"link": link}
-        # Fallback: any globo link
+        # Priority 2: any link with reset/senha keywords (but NOT ajuda/help pages)
         for raw in all_links:
-            link = raw.replace("&amp;", "&")
+            link = raw.replace("&amp;", "&").replace("&#x3D;", "=")
             ll = link.lower()
             if any(s in ll for s in skip):
                 continue
-            if "globo" in ll:
+            if any(kw in ll for kw in ["redefinir", "reset", "password", "senha", "recover", "recuperacao"]):
                 return {"link": link}
+        # NO FALLBACK — não retorna links genéricos de ajuda/FAQ
 
     # === NETFLIX LINK SERVICES (password_reset, household_update) ===
     if service in ("password_reset", "household_update"):
