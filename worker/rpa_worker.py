@@ -1420,6 +1420,20 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         _is_phone_only = any(kw in body_text for kw in phone_keywords)
         if _is_phone_only:
             logger.info(f"[{job_id}] Phone verification detected, looking for password bypass...")
+            
+            # Quick check: if the initial page has NO email option at all (no @ besides account email),
+            # it's phone-only. Return PHONE_ONLY immediately to avoid crashes during bypass attempts.
+            _body_no_acct = body_text.replace(email_addr.lower(), "")
+            _has_any_email_option = "@" in _body_no_acct
+            if not _has_any_email_option:
+                # Double check: look for "email" keyword near a radio button
+                _has_email_word = any(kw in body_text for kw in ["email ", "e-mail "])
+                if not _has_email_word:
+                    logger.warning(f"[{job_id}] Phone-only: no email options on initial page. Returning PHONE_ONLY.")
+                    update_job(job_id, "error",
+                        message="PHONE_ONLY: Esta conta só tem verificação por telefone e não possui email alternativo cadastrado. Adicione um email de recuperação nas configurações da conta Microsoft.")
+                    return False
+            
             _phone_bypassed = False
             
             # Strategy 1: Try "Use your password" links
