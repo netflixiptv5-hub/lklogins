@@ -1585,9 +1585,18 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                                     _phone_bypassed = True
                                     logger.info(f"[{job_id}] Found email options after clicking '{fallback_text}'!")
                                     break
-                                if page.locator("input[type=radio]").count() > 0:
-                                    _phone_bypassed = True
-                                    logger.info(f"[{job_id}] Found radio buttons after clicking '{fallback_text}'!")
+                                # Check radio buttons — only count as bypass if a radio has an @ email
+                                radios_after = page.locator("input[type=radio]").all()
+                                for r in radios_after:
+                                    try:
+                                        rtxt = r.evaluate("el => { let p = el.closest('div, label, li, tr'); return p ? p.textContent : ''; }") or ""
+                                        if "@" in rtxt and "don't have" not in rtxt.lower():
+                                            _phone_bypassed = True
+                                            logger.info(f"[{job_id}] Found email radio after '{fallback_text}': {rtxt.strip()[:60]}")
+                                            break
+                                    except:
+                                        continue
+                                if _phone_bypassed:
                                     break
                         except:
                             continue
@@ -4557,6 +4566,17 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                                     logger.warning(f"[{job_id}] Loop retry: still verification, giving up")
                         
                         logger.warning(f"[{job_id}] MS verification loop detected — giving up")
+                        # Check if this is actually phone-only (no email radio found)
+                        try:
+                            _loop_body = page.inner_text("body").lower()
+                            _has_phone_kw = any(kw in _loop_body for kw in ["text *", "sms *", "verify your phone", "phone number"])
+                            _has_email_kw = any(kw in _loop_body for kw in ["@cinepremiu", "@gmail", "@hotmail", "@outlook"])
+                            if _has_phone_kw and not _has_email_kw:
+                                update_job(job_id, "error",
+                                    message="PHONE_ONLY: Esta conta só tem verificação por telefone e não possui email alternativo cadastrado. Adicione um email de recuperação nas configurações da conta Microsoft.")
+                                return
+                        except:
+                            pass
                         update_job(job_id, "error",
                             message="Microsoft está pedindo verificação em loop. Tente novamente em alguns minutos.")
                         return
