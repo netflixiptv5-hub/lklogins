@@ -1876,12 +1876,24 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             
             # Always try to resolve — even if username matches, could be a different recovery email
             logger.info(f"[{job_id}] Resolving masked email '{masked_prefix}***@{masked_domain}'...")
-            resolved = resolve_recovery_email(masked_prefix, masked_domain, job_id)
-            if resolved:
-                recovery = resolved
-            elif "cinepremiu" in masked_domain:
+            
+            # For @cinepremiu.com: prefer {username}@cinepremiu.com over catchall
+            # because most accounts were created with username@cinepremiu.com as recovery
+            if "cinepremiu" in masked_domain and username.lower().startswith(masked_prefix.lower()):
+                recovery = f"{username}@cinepremiu.com"
+                logger.info(f"[{job_id}] cinepremiu domain + prefix matches username -> {recovery}")
+            else:
+                resolved = resolve_recovery_email(masked_prefix, masked_domain, job_id)
+                if resolved:
+                    recovery = resolved
+            
+            if recovery == f"{username}@{RECOVERY_DOMAIN}" and "cinepremiu" not in masked_domain:
+                # fallback for non-cinepremiu domains
+                pass
+            elif "cinepremiu" in masked_domain and not username.lower().startswith(masked_prefix.lower()):
+                # username doesn't match prefix, try catchall
                 recovery = f"catchall@cinepremiu.com"
-                logger.info(f"[{job_id}] Domain is cinepremiu, using catchall")
+                logger.info(f"[{job_id}] Domain is cinepremiu but prefix doesn't match username, using catchall")
             else:
                 # Last resort: try simple guess
                 if "." in masked_domain and masked_domain.endswith(".com"):
@@ -2056,6 +2068,13 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                 
                 # === RETRY with other candidates from known list ===
                 _all_candidates = resolve_all_recovery_emails(masked_prefix, masked_domain, job_id) if masked_match else []
+                # Also add username@cinepremiu.com and catchall@cinepremiu.com as fallback candidates
+                if masked_match and "cinepremiu" in masked_domain:
+                    _user_email = f"{username}@cinepremiu.com"
+                    _catchall = "catchall@cinepremiu.com"
+                    for _extra in [_user_email, _catchall]:
+                        if _extra not in _all_candidates and _extra != recovery:
+                            _all_candidates.append(_extra)
                 _remaining = [c for c in _all_candidates if c != recovery]
                 
                 if _remaining:
