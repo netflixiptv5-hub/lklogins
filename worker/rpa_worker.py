@@ -17,10 +17,10 @@ from email.header import decode_header
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
-
-class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
+class NonThreadingHTTPServer(HTTPServer):
+    """Single-threaded HTTP server — requests are fast (just queue a job).
+    Avoids spawning a thread per HTTP request which leaks when under load."""
+    request_queue_size = 20  # allow backlog of up to 20 connections
 import urllib.request
 import traceback
 import threading
@@ -122,30 +122,24 @@ def _start_playwright_sync():
     return sync_playwright().start()
 
 def _safe_close_browser(browser, pw, job_id="?"):
-    """Close browser and playwright with timeout — never hangs on crashed Playwright."""
-    def _do_close():
-        if browser:
+    """Close browser and playwright — uses signal-based timeout instead of spawning a thread."""
+    # First try to close browser gracefully (no extra thread)
+    if browser:
+        try:
+            browser.close()
+        except Exception as e:
+            logger.debug(f"[{job_id}] browser.close() error: {e}")
+            # If close fails, force kill chrome for THIS browser
             try:
-                browser.close()
+                for pattern in ["chrome", "chromium", "headless_shell"]:
+                    subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True, timeout=3)
             except:
                 pass
-        if pw:
-            try:
-                pw.stop()
-            except:
-                pass
-    
-    t = threading.Thread(target=_do_close, daemon=True)
-    t.start()
-    t.join(timeout=5)  # max 5 seconds to close
-    if t.is_alive():
-        logger.warning(f"[{job_id}] browser.close()/pw.stop() hung — force killing chrome")
-        # Only kill chrome, NOT playwright driver
-        for pattern in ["chrome", "chromium", "headless_shell"]:
-            try:
-                subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True, timeout=5)
-            except:
-                pass
+    if pw:
+        try:
+            pw.stop()
+        except Exception as e:
+            logger.debug(f"[{job_id}] pw.stop() error: {e}")
 
 
 # === MEMORY / PROCESS CLEANUP ===
@@ -256,13 +250,14 @@ def _post_job_cleanup(job_id: str):
             os._exit(1)  # Railway will auto-restart
 
 def _periodic_cleanup_loop():
-    """Background thread: every 3 min kill zombie chromes + gc + memory check."""
+    """Background thread: every 3 min kill zombie chromes + gc + memory check + thread check."""
     while True:
         time.sleep(180)  # 3 min
         try:
             mem_mb = _get_memory_mb()
             chrome_count = _count_chrome_procs()
-            logger.info(f"[PERIODIC] RSS: {mem_mb:.0f} MB, Chrome procs: {chrome_count}")
+            thread_count = threading.active_count()
+            logger.info(f"[PERIODIC] RSS: {mem_mb:.0f} MB, Chrome procs: {chrome_count}, Threads: {thread_count}")
             
             # Always cleanup
             _cleanup_zombie_chrome()
@@ -278,12 +273,21 @@ def _periodic_cleanup_loop():
             
             # Log after cleanup
             mem_after = _get_memory_mb()
-            logger.info(f"[PERIODIC] After cleanup RSS: {mem_after:.0f} MB")
+            thread_after = threading.active_count()
+            logger.info(f"[PERIODIC] After cleanup RSS: {mem_after:.0f} MB, Threads: {thread_after}")
             
             # Emergency restart if memory won't go down
             if mem_after > 2000:
                 logger.critical(f"[PERIODIC] Memory too high ({mem_after:.0f}MB) — RESTARTING")
                 send_alert(f"⚠️ Memória crítica ({mem_after:.0f}MB)\nReiniciando automaticamente...")
+                _cleanup_zombie_chrome(force=True)
+                time.sleep(2)
+                os._exit(1)  # Railway auto-restart
+            
+            # Emergency restart if too many threads (approaching OS limit)
+            if thread_after > 80:
+                logger.critical(f"[PERIODIC] Too many threads ({thread_after}) — RESTARTING")
+                send_alert(f"⚠️ Threads crítico ({thread_after} threads)\nReiniciando automaticamente...")
                 _cleanup_zombie_chrome(force=True)
                 time.sleep(2)
                 os._exit(1)  # Railway auto-restart
@@ -4488,8 +4492,7 @@ def process_job(job_id: str, email_addr: str, service: str):
     _timed_out = [False]
     
     def _timeout_handler():
-        """Background thread that kills the job if it takes too long."""
-        time.sleep(JOB_TIMEOUT)
+        """Timer callback — runs when job exceeds timeout."""
         _timed_out[0] = True
         _cancel_job(job_id)  # Signal code_login and other loops to stop
         logger.error(f"[{job_id}] JOB TIMEOUT after {JOB_TIMEOUT}s — forcing cleanup")
@@ -4498,7 +4501,9 @@ def process_job(job_id: str, email_addr: str, service: str):
         _post_job_cleanup(job_id)
         _cleanup_zombie_chrome(force=False)
     
-    timer = threading.Thread(target=_timeout_handler, daemon=True)
+    # Use threading.Timer instead of Thread+sleep — can be cancelled when job finishes
+    timer = threading.Timer(JOB_TIMEOUT, _timeout_handler)
+    timer.daemon = True
     timer.start()
     
     try:
@@ -4514,6 +4519,7 @@ def process_job(job_id: str, email_addr: str, service: str):
                 logger.error(f"[{job_id}] Unhandled error: {err_str[:300]}")
                 update_job(job_id, "error", message="Erro interno. Tente novamente.")
     finally:
+        timer.cancel()  # Cancel timer thread immediately — frees thread resource
         _clear_cancelled(job_id)
         _post_job_cleanup(job_id)
 
@@ -5061,11 +5067,13 @@ def _tracked_process_job(job_id, email_addr, service):
         # Alert on critical errors (thread/memory exhaustion)
         if "can't start new thread" in str(e) or "Cannot allocate memory" in str(e) or "Resource temporarily unavailable" in str(e):
             try:
-                send_alert(f"💀 CRASH: {e}\nJob: {job_id}\nEmail: {email_addr}\n\nServidor precisa de restart!")
-                # Force kill all chrome and try to recover
+                send_alert(f"💀 CRASH: {e}\nJob: {job_id}\nEmail: {email_addr}\n\nReiniciando automaticamente...")
                 _kill_all_chrome()
             except:
                 pass
+            # Force restart immediately — can't recover from thread exhaustion
+            time.sleep(2)
+            os._exit(1)  # Railway auto-restart
     finally:
         with _active_jobs_lock:
             _active_jobs.pop(job_id, None)
@@ -5381,7 +5389,7 @@ if __name__ == "__main__":
     threading.Thread(target=_tmp_cleanup_loop, daemon=True).start()
     
     port = int(os.environ.get("WORKER_PORT", 8787))
-    server = ThreadingHTTPServer(("0.0.0.0", port), JobHandler)
+    server = NonThreadingHTTPServer(("0.0.0.0", port), JobHandler)
     logger.info(f"RPA Worker running on port {port}")
     
     # Notify Node to clean up stale jobs from previous run
