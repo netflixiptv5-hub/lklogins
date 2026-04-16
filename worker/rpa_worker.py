@@ -122,24 +122,21 @@ def _start_playwright_sync():
     return sync_playwright().start()
 
 def _safe_close_browser(browser, pw, job_id="?"):
-    """Close browser and playwright — uses signal-based timeout instead of spawning a thread."""
-    # First try to close browser gracefully (no extra thread)
+    """Close browser and playwright — does NOT kill other jobs' browsers."""
     if browser:
         try:
             browser.close()
         except Exception as e:
             logger.debug(f"[{job_id}] browser.close() error: {e}")
-            # If close fails, force kill chrome for THIS browser
-            try:
-                for pattern in ["chrome", "chromium", "headless_shell"]:
-                    subprocess.run(["pkill", "-9", "-f", pattern], capture_output=True, timeout=3)
-            except:
-                pass
+            # Instead of pkill ALL chrome, only kill THIS job's tracked PIDs
+            _kill_job_browser(job_id)
     if pw:
         try:
             pw.stop()
         except Exception as e:
             logger.debug(f"[{job_id}] pw.stop() error: {e}")
+    # Always unregister this job's browser
+    _unregister_browser(job_id)
 
 
 # === MEMORY / PROCESS CLEANUP ===
@@ -147,6 +144,70 @@ _active_pws = set()  # track active playwright PIDs
 _active_pws_lock = threading.Lock()
 _jobs_since_cleanup = 0
 _jobs_lock = threading.Lock()
+
+# === BROWSER TRACKING PER JOB (prevents cross-job kills) ===
+_job_browsers = {}  # job_id -> {"browser": browser_obj, "pw": pw_obj, "pids": set()}
+_job_browsers_lock = threading.Lock()
+
+def _register_browser(job_id: str, browser, pw=None):
+    """Register a browser instance for a job. Records chrome PIDs spawned by this browser."""
+    pids = set()
+    try:
+        # Get all chrome PIDs owned by this browser's process tree
+        # Playwright browser has an internal process we can track
+        result = subprocess.run(
+            ["pgrep", "-f", "chrom"], capture_output=True, text=True, timeout=5
+        )
+        if result.stdout.strip():
+            pids = {int(p) for p in result.stdout.strip().split('\n') if p.strip()}
+    except:
+        pass
+    with _job_browsers_lock:
+        # Record PIDs that are NEW (not in any other job)
+        existing_pids = set()
+        for jid, info in _job_browsers.items():
+            if jid != job_id:
+                existing_pids |= info.get("pids", set())
+        new_pids = pids - existing_pids
+        _job_browsers[job_id] = {"browser": browser, "pw": pw, "pids": new_pids}
+    logger.debug(f"[{job_id}] Registered browser with {len(pids)} chrome PIDs ({len(pids - existing_pids)} new)")
+
+def _unregister_browser(job_id: str):
+    """Unregister a browser when job finishes."""
+    with _job_browsers_lock:
+        _job_browsers.pop(job_id, None)
+
+def _kill_job_browser(job_id: str):
+    """Kill ONLY the browser belonging to a specific job. Does NOT affect other jobs."""
+    with _job_browsers_lock:
+        info = _job_browsers.get(job_id)
+    if not info:
+        return
+    browser = info.get("browser")
+    if browser:
+        try:
+            browser.close()
+            logger.info(f"[{job_id}] Closed browser via browser.close()")
+        except Exception as e:
+            logger.debug(f"[{job_id}] browser.close() failed: {e}")
+            # Kill only THIS job's tracked PIDs
+            pids = info.get("pids", set())
+            if pids:
+                for pid in pids:
+                    try:
+                        os.kill(pid, 9)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                logger.info(f"[{job_id}] Killed {len(pids)} tracked PIDs")
+    _unregister_browser(job_id)
+
+def _get_protected_pids():
+    """Get all chrome PIDs that belong to active jobs (should NOT be killed)."""
+    with _job_browsers_lock:
+        protected = set()
+        for jid, info in _job_browsers.items():
+            protected |= info.get("pids", set())
+        return protected
 
 def _get_memory_mb():
     """Get current RSS memory usage in MB."""
@@ -183,7 +244,7 @@ def _kill_all_chrome():
             pass
 
 def _cleanup_zombie_chrome(force=False):
-    """Kill orphan chrome processes. NEVER kills playwright driver."""
+    """Kill orphan chrome processes — PROTECTS browsers belonging to active jobs."""
     try:
         count = _count_chrome_procs()
         mem_mb = _get_memory_mb()
@@ -191,20 +252,44 @@ def _cleanup_zombie_chrome(force=False):
         with _active_jobs_lock:
             active_count = len(_active_jobs)
         
-        # Kill chrome if: forced, too many procs, high mem, or no active jobs with orphan procs
-        # More aggressive: kill if too many procs even with active jobs
+        protected_pids = _get_protected_pids()
+        
+        # Determine if we should kill
         if active_count > 0:
             should_kill = force or mem_mb > 1200 or count > (active_count * 8)
         else:
             should_kill = force or count > 0 or mem_mb > 800
         
         if should_kill:
-            logger.warning(f"[CLEANUP] Killing chrome — procs={count}, mem={mem_mb:.0f}MB, active_jobs={active_count}")
-            # Only kill chrome/chromium browsers, NOT playwright run-driver
-            subprocess.run(
-                ["bash", "-c", "ps aux | grep -E 'chrom|headless_shell' | grep -v 'run-driver' | grep -v grep | awk '{print $2}' | xargs -r kill -9"],
-                capture_output=True, timeout=5
-            )
+            if protected_pids and active_count > 0:
+                # SAFE MODE: kill only unprotected chrome procs
+                logger.warning(f"[CLEANUP] Safe kill — procs={count}, mem={mem_mb:.0f}MB, active_jobs={active_count}, protected_pids={len(protected_pids)}")
+                try:
+                    result = subprocess.run(
+                        ["bash", "-c", "ps aux | grep -E 'chrom|headless_shell' | grep -v 'run-driver' | grep -v grep | awk '{print $2}'"],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.stdout.strip():
+                        all_pids = {int(p) for p in result.stdout.strip().split('\n') if p.strip()}
+                        orphan_pids = all_pids - protected_pids
+                        if orphan_pids:
+                            for pid in orphan_pids:
+                                try:
+                                    os.kill(pid, 9)
+                                except (ProcessLookupError, PermissionError):
+                                    pass
+                            logger.info(f"[CLEANUP] Killed {len(orphan_pids)} orphan PIDs, protected {len(protected_pids)}")
+                        else:
+                            logger.info(f"[CLEANUP] All {len(all_pids)} chrome procs belong to active jobs — skipping kill")
+                except Exception as e:
+                    logger.debug(f"[CLEANUP] Safe kill error: {e}")
+            else:
+                # No active jobs or no tracked browsers — kill all
+                logger.warning(f"[CLEANUP] Killing ALL chrome — procs={count}, mem={mem_mb:.0f}MB, active_jobs={active_count}")
+                subprocess.run(
+                    ["bash", "-c", "ps aux | grep -E 'chrom|headless_shell' | grep -v 'run-driver' | grep -v grep | awk '{print $2}' | xargs -r kill -9"],
+                    capture_output=True, timeout=5
+                )
             time.sleep(0.5)
             after_count = _count_chrome_procs()
             after_mem = _get_memory_mb()
@@ -216,6 +301,9 @@ def _cleanup_zombie_chrome(force=False):
 
 def _post_job_cleanup(job_id: str):
     """Run after EVERY job to free memory and kill leaked processes."""
+    # Always unregister this job's browser first
+    _unregister_browser(job_id)
+    
     try:
         gc.collect()
         gc.collect()
@@ -3887,6 +3975,7 @@ def process_job_gmail(job_id: str, email_addr: str, service: str, password: str)
                        "--disable-features=TranslateUI",
                        "--disable-ipc-flooding-protection"]
         )
+        _register_browser(job_id, browser, pw)
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 720},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -4223,6 +4312,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
                        "--disable-features=TranslateUI",
                        "--disable-ipc-flooding-protection"]
         )
+        _register_browser(job_id, browser, pw)
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 720},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -4519,9 +4609,8 @@ def process_job(job_id: str, email_addr: str, service: str):
         _cancel_job(job_id)  # Signal code_login and other loops to stop
         logger.error(f"[{job_id}] JOB TIMEOUT after {JOB_TIMEOUT}s — forcing cleanup")
         update_job(job_id, "error", message=f"Timeout após {JOB_TIMEOUT//60}min. Tente novamente.")
-        # Kill Chrome processes aggressively
-        _post_job_cleanup(job_id)
-        _cleanup_zombie_chrome(force=False)
+        # Kill ONLY this job's browser — do NOT kill other jobs' browsers
+        _kill_job_browser(job_id)
     
     # Use threading.Timer instead of Thread+sleep — can be cancelled when job finishes
     timer = threading.Timer(JOB_TIMEOUT, _timeout_handler)
@@ -4638,6 +4727,7 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
             return b, ctx, p
         
         browser, context, page = launch_browser()
+        _register_browser(job_id, browser, pw)
         
         # === TRY COOKIE CACHE FIRST ===
         _used_cookie_cache = False
@@ -4908,6 +4998,7 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
                             except:
                                 pass
                             browser, context, page = launch_browser()
+                            _register_browser(job_id, browser, pw)
                             ok = fast_login(page, email_addr, job_id)
                             if ok:
                                 state = handle_post_login(page, job_id)
@@ -5028,8 +5119,8 @@ def _process_job_inner(job_id: str, email_addr: str, service: str):
     if _playwright_password_fail:
         try:
             logger.info(f"[{job_id}] Tentando code login como último recurso...")
-            # Garante que Chrome anterior morreu e Playwright tá limpo
-            _cleanup_zombie_chrome(force=True)
+            # Garante que Chrome anterior deste job morreu — NÃO mata browsers de outros jobs
+            _kill_job_browser(job_id)
             time.sleep(2)
             gc.collect()
             if process_job_code_login(job_id, email_addr, service):
