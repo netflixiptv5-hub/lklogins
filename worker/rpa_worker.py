@@ -2857,7 +2857,11 @@ def search_and_extract(page, service: str, patterns: list, job_id: str, email_ad
     logger.info(f"[{job_id}] Going to Outlook...")
     
     # Tenta navegar pro Outlook — múltiplas URLs de fallback
-    current_url = page.url.lower()
+    try:
+        current_url = page.url.lower()
+    except Exception as url_err:
+        logger.error(f"[{job_id}] page.url failed (browser dead?): {url_err}")
+        return None
     _in_outlook = "outlook.live.com/mail" in current_url and "microsoft-365" not in current_url and "microsoft.com/en" not in current_url
     
     if _in_outlook:
@@ -4467,7 +4471,25 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 
         # === STEP 6: Search emails ===
         update_job(job_id, "searching", method="code", eta=10)
-        result = search_and_extract(page, service, patterns, job_id, email_addr=email_addr)
+        try:
+            result = search_and_extract(page, service, patterns, job_id, email_addr=email_addr)
+        except Exception as search_err:
+            logger.error(f"[{job_id}] search_and_extract crashed after code login: {search_err}")
+            # Browser crashed during search — try once more with a new page
+            try:
+                page = ctx.new_page()
+                try:
+                    from playwright_stealth import Stealth
+                    Stealth().apply_stealth_sync(page)
+                except:
+                    pass
+                page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+                time.sleep(6)
+                result = search_and_extract(page, service, patterns, job_id, email_addr=email_addr)
+            except Exception as retry_err:
+                logger.error(f"[{job_id}] search retry also failed: {retry_err}")
+                update_job(job_id, "error", message="Login OK mas busca falhou. Tente novamente.")
+                return True
 
         if result:
             update_job(job_id, "found",
