@@ -592,7 +592,8 @@ def resolve_recovery_email(masked_prefix: str, masked_domain_hint: str, job_id: 
 
 
 def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60, min_timestamp: float = 0) -> str | None:
-    """Get Microsoft verification code from @cinepremiu.com via IMAP.
+    """Get Microsoft verification code via IMAP.
+    Automatically picks Gmail IMAP or cinepremiu IMAP based on target_email domain.
     min_timestamp: only accept emails received AFTER this unix timestamp (to skip old codes).
     Checks last 10 emails (newest first) to handle cases where newer non-MS emails arrive after the code.
     """
@@ -600,10 +601,38 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60,
     start = time.time()
     _found_ids = set()  # track msg_ids we already checked and had no code
 
+    # Determine IMAP server based on target email domain
+    target_lower = target_email.lower()
+    target_nodots = target_lower.split("@")[0].replace(".", "") + "@" + target_lower.split("@")[1] if "@" in target_lower else target_lower
+    _use_gmail = target_lower.endswith("@gmail.com")
+    
+    if _use_gmail:
+        # Find Gmail IMAP credentials — normalize (remove dots) to match GMAIL_IMAP_ACCOUNTS keys
+        _gmail_user = None
+        _gmail_pass = None
+        for acct, pwd in GMAIL_IMAP_ACCOUNTS.items():
+            acct_nodots = acct.split("@")[0].replace(".", "") + "@gmail.com"
+            if acct_nodots == target_nodots or acct == target_lower:
+                _gmail_user = acct
+                _gmail_pass = pwd
+                break
+        if _gmail_user:
+            logger.info(f"[{job_id}] Using Gmail IMAP for {target_email} (account: {_gmail_user})")
+        else:
+            logger.warning(f"[{job_id}] No Gmail IMAP credentials for {target_email}, falling back to cinepremiu")
+            _use_gmail = False
+    
+    if not _use_gmail:
+        logger.info(f"[{job_id}] Using cinepremiu IMAP for {target_email}")
+
     while time.time() - start < max_wait:
         try:
-            mail = imaplib.IMAP4_SSL(RECOVERY_IMAP_SERVER, 993, timeout=10)
-            mail.login(RECOVERY_EMAIL, RECOVERY_PASSWORD)
+            if _use_gmail:
+                mail = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=10)
+                mail.login(_gmail_user, _gmail_pass)
+            else:
+                mail = imaplib.IMAP4_SSL(RECOVERY_IMAP_SERVER, 993, timeout=10)
+                mail.login(RECOVERY_EMAIL, RECOVERY_PASSWORD)
             mail.select("INBOX", readonly=True)
             cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
             
@@ -4600,7 +4629,7 @@ def process_job_code_login(job_id: str, email_addr: str, service: str) -> bool:
 def process_job(job_id: str, email_addr: str, service: str):
     """Main job processor — wrapper with cleanup and global timeout."""
     
-    JOB_TIMEOUT = 150  # 2.5 min max per job — libera slot rápido
+    JOB_TIMEOUT = 240  # 4 min max per job — more time for Gmail IMAP verification
     _timed_out = [False]
     
     def _timeout_handler():
