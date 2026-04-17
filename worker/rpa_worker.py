@@ -78,6 +78,10 @@ KNOWN_RECOVERY_EMAILS = [
     "tech3401.1@gmail.com",
     "te.ch3.4011@gmail.com",
     "catchall@cinepremiu.com",
+    # Numeric-only recovery emails (discovered via IMAP logs)
+    "6@cinepremiu.com",
+    "7@cinepremiu.com",
+    "600@cinepremiu.com",
 ]
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
@@ -2001,15 +2005,31 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             # Always try to resolve — even if username matches, could be a different recovery email
             logger.info(f"[{job_id}] Resolving masked email '{masked_prefix}***@{masked_domain}'...")
             
-            # For @cinepremiu.com: prefer {username}@cinepremiu.com over catchall
-            # because most accounts were created with username@cinepremiu.com as recovery
+            # For @cinepremiu.com: try multiple strategies
+            # 1. username@cinepremiu.com (if prefix matches)
+            # 2. Known recovery emails matching prefix (e.g. 7@cinepremiu.com)
+            # 3. {prefix}@cinepremiu.com (direct guess — catchall will receive it)
+            # 4. catchall@cinepremiu.com (last resort)
             if "cinepremiu" in masked_domain:
                 if username.lower().startswith(masked_prefix.lower()):
                     recovery = f"{username}@cinepremiu.com"
                     logger.info(f"[{job_id}] cinepremiu + prefix matches username -> {recovery}")
                 else:
-                    recovery = f"catchall@cinepremiu.com"
-                    logger.info(f"[{job_id}] cinepremiu but prefix '{masked_prefix}' != username '{username}', using catchall")
+                    # Check KNOWN_RECOVERY_EMAILS for exact prefix match first
+                    _known_match = None
+                    for _known in KNOWN_RECOVERY_EMAILS:
+                        if "@cinepremiu" in _known:
+                            _known_local = _known.split("@")[0].lower()
+                            if _known_local.startswith(masked_prefix.lower()):
+                                _known_match = _known
+                                break
+                    if _known_match:
+                        recovery = _known_match
+                        logger.info(f"[{job_id}] cinepremiu prefix '{masked_prefix}' matched known: {recovery}")
+                    else:
+                        # Direct guess: prefix@cinepremiu.com (catchall will receive)
+                        recovery = f"{masked_prefix}@cinepremiu.com"
+                        logger.info(f"[{job_id}] cinepremiu prefix '{masked_prefix}' != username '{username}', guessing: {recovery}")
             else:
                 resolved = resolve_recovery_email(masked_prefix, masked_domain, job_id)
                 if resolved:
@@ -4047,6 +4067,8 @@ RECOVERY_FALLBACKS = (
     ["netflix@cinepremiu.com"]
     + [f"netflix{i}@cinepremiu.com" for i in range(1, 20)]
     + [f"{i}netflix@cinepremiu.com" for i in range(1, 20)]
+    # Numeric-only recovery emails (e.g. 6@, 7@, 600@cinepremiu.com)
+    + [f"{i}@cinepremiu.com" for i in range(1, 1000)]
 )
 
 
