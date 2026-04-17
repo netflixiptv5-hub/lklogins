@@ -2173,7 +2173,7 @@ def handle_verification(page, job_id: str, username: str) -> bool:
             # Code was sent — wait for it via IMAP and enter it
             # Use _send_code_ts to only accept codes newer than when we clicked Send
             logger.info(f"[{job_id}] Code sent! Waiting for IMAP delivery...")
-            code = get_ms_verification_code(recovery, job_id, max_wait=55, min_timestamp=_send_code_ts)
+            code = get_ms_verification_code(recovery, job_id, max_wait=20, min_timestamp=_send_code_ts)
             if code == "UNUSUAL_ACTIVITY":
                 logger.warning(f"[{job_id}] MS sent 'unusual activity' alert instead of code for {recovery}. Account may need manual review.")
                 update_job(job_id, "error",
@@ -2274,7 +2274,7 @@ def handle_verification(page, job_id: str, username: str) -> bool:
                         time.sleep(4)
                         
                         logger.info(f"[{job_id}] Waiting for code via {alt_recovery}...")
-                        code = get_ms_verification_code(alt_recovery, job_id, max_wait=40, min_timestamp=_alt_send_ts)
+                        code = get_ms_verification_code(alt_recovery, job_id, max_wait=15, min_timestamp=_alt_send_ts)
                         if code == "UNUSUAL_ACTIVITY":
                             logger.warning(f"[{job_id}] Unusual activity alert for {alt_recovery}")
                             update_job(job_id, "error",
