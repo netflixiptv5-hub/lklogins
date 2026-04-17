@@ -66,37 +66,43 @@ RECOVERY_PASSWORD = "02022013L@@@@"
 
 # Known recovery emails used for MS identity verification
 # When MS shows masked email like "te*****@gm...", we match against these
-KNOWN_RECOVERY_EMAILS = [
-    "tech34011@gmail.com",
-    "tech.34011@gmail.com",
-    "tech34.011@gmail.com",
-    "t.ech34011@gmail.com",
-    "te.ch34011@gmail.com",
-    "tec.h34011@gmail.com",
-    "tech3.4011@gmail.com",
-    "tech340.11@gmail.com",
-    "tech3401.1@gmail.com",
-    "te.ch3.4011@gmail.com",
-    "catchall@cinepremiu.com",
-    # Netflix-pattern recovery emails (ne*****@cinepremiu.com → netflix@cinepremiu.com)
-    "netflix@cinepremiu.com",
-    "netflix1@cinepremiu.com",
-    "netflix2@cinepremiu.com",
-    "netflix3@cinepremiu.com",
-    "netflix4@cinepremiu.com",
-    "netflix5@cinepremiu.com",
-    "netflix6@cinepremiu.com",
-    "netflix7@cinepremiu.com",
-    "netflix8@cinepremiu.com",
-    "netflix9@cinepremiu.com",
-    "netflix10@cinepremiu.com",
-    "netflixiptv@cinepremiu.com",
-    "netflixiptv5@cinepremiu.com",
-    # Numeric-only recovery emails (discovered via IMAP logs)
-    "6@cinepremiu.com",
-    "7@cinepremiu.com",
-    "600@cinepremiu.com",
-]
+# === AUTO-GENERATED KNOWN RECOVERY EMAILS ===
+# Covers ALL possible @cinepremiu.com and @gmail.com patterns so we NEVER
+# have to manually add recovery emails again.
+#
+# Patterns covered:
+#   netflix@, netflix1-99@, 1netflix-99netflix@, netflixiptv@, netflixiptv1-20@
+#   tech34011@ (gmail variations with dots)
+#   catchall@
+#   Numeric: 1-999@cinepremiu.com
+#   Any future pattern: auto-matched by IMAP fallback search
+KNOWN_RECOVERY_EMAILS = (
+    # --- Gmail tech accounts (all dot variations) ---
+    [
+        "tech34011@gmail.com",
+        "tech.34011@gmail.com",
+        "tech34.011@gmail.com",
+        "t.ech34011@gmail.com",
+        "te.ch34011@gmail.com",
+        "tec.h34011@gmail.com",
+        "tech3.4011@gmail.com",
+        "tech340.11@gmail.com",
+        "tech3401.1@gmail.com",
+        "te.ch3.4011@gmail.com",
+    ]
+    # --- cinepremiu.com: netflix + number (netflix@, netflix1@ ... netflix99@) ---
+    + ["netflix@cinepremiu.com"]
+    + [f"netflix{i}@cinepremiu.com" for i in range(1, 100)]
+    # --- cinepremiu.com: number + netflix (1netflix@ ... 99netflix@) ---
+    + [f"{i}netflix@cinepremiu.com" for i in range(1, 100)]
+    # --- cinepremiu.com: netflixiptv variations ---
+    + ["netflixiptv@cinepremiu.com"]
+    + [f"netflixiptv{i}@cinepremiu.com" for i in range(1, 21)]
+    # --- cinepremiu.com: pure numeric (1@ ... 999@) ---
+    + [f"{i}@cinepremiu.com" for i in range(1, 1000)]
+    # --- cinepremiu.com: catchall (last resort) ---
+    + ["catchall@cinepremiu.com"]
+)
 _server_port = os.environ.get("PORT", "3000")
 API_BASE = os.environ.get("API_BASE", f"http://localhost:{_server_port}")
 MAX_WORKERS = 5
