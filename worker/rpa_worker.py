@@ -634,7 +634,7 @@ def get_ms_verification_code(target_email: str, job_id: str, max_wait: int = 60,
                 mail = imaplib.IMAP4_SSL(RECOVERY_IMAP_SERVER, 993, timeout=10)
                 mail.login(RECOVERY_EMAIL, RECOVERY_PASSWORD)
             mail.select("INBOX", readonly=True)
-            cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
+            cutoff = (datetime.now() - timedelta(days=1)).strftime("%d-%b-%Y")  # Use 1 day back — IMAP SINCE uses email date which may be in different timezone
             
             # Try specific TO search first, then broad if no results
             search_attempts = []
@@ -4119,7 +4119,7 @@ def _gmail_imap_get_code(gmail_addr: str, min_id: int, max_wait: int = 120) -> s
             mail.login(canonical, app_pass)
             mail.select("INBOX", readonly=True)
 
-            cutoff = (datetime.now() - timedelta(minutes=5)).strftime("%d-%b-%Y")
+            cutoff = (datetime.now() - timedelta(days=1)).strftime("%d-%b-%Y")  # Use 1 day back — IMAP SINCE uses email date which may be in different timezone
             q = f'(FROM "microsoft" SINCE "{cutoff}")'
             status, ids = mail.search(None, q)
 
