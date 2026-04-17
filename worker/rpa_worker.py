@@ -67,14 +67,14 @@ RECOVERY_PASSWORD = "02022013L@@@@"
 # Known recovery emails used for MS identity verification
 # When MS shows masked email like "te*****@gm...", we match against these
 KNOWN_RECOVERY_EMAILS = [
-    "tech340.11@gmail.com",
     "tech34011@gmail.com",
-    "tech34.011@gmail.com",
     "tech.34011@gmail.com",
+    "tech34.011@gmail.com",
     "t.ech34011@gmail.com",
     "te.ch34011@gmail.com",
     "tec.h34011@gmail.com",
     "tech3.4011@gmail.com",
+    "tech340.11@gmail.com",
     "tech3401.1@gmail.com",
     "te.ch3.4011@gmail.com",
     "catchall@cinepremiu.com",
