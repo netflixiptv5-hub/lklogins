@@ -458,6 +458,13 @@ EMAIL_PATTERNS = {
         "nova senha", "alteração de senha",
         "recuperar sua senha", "clique para recuperar", "recuperar senha",
     ],
+    "hbo_reset": [
+        "alteração de senha", "redefinição de senha", "redefinir senha",
+        "redefina sua senha", "set new password", "reset your password",
+        "password reset", "nova senha", "new password",
+        "link para alteração", "solicitado às",
+        "restablecimiento de contraseña", "cambiar contraseña",
+    ],
 }
 
 # === Sender patterns for IMAP direct search ===
@@ -466,6 +473,7 @@ IMAP_SENDER_PATTERNS = {
     "prime_code": ["amazon", "prime", "primevideo"],
     "disney_code": ["disney", "disneyplus"],
     "globo_reset": ["globo", "globoplay"],
+    "hbo_reset": ["hbo", "hbomax", "max.com", "warnermedia", "warner"],
     "password_reset": ["netflix", "info@account.netflix.com"],
     "household_update": ["netflix", "info@account.netflix.com"],
     "temp_code": ["netflix", "info@account.netflix.com"],
@@ -887,6 +895,32 @@ def extract_email_content(html: str, service: str) -> dict | None:
             if any(kw in ll for kw in ["redefinir", "reset", "password", "senha", "recover", "recuperacao"]):
                 return {"link": link}
         # NO FALLBACK — não retorna links genéricos de ajuda/FAQ
+
+    # === HBO MAX PASSWORD RESET ===
+    if service == "hbo_reset":
+        if not any(kw in html_lower for kw in ["hbo", "max.com", "warnermedia", "warner"]):
+            return None
+        all_links = re.findall(r'href="(https?://[^"]+)"', html, re.IGNORECASE)
+        skip = ["unsubscribe", "privacy", ".png", ".jpg", ".gif", ".svg", "tracking", "beacon",
+                "help.max", "support.max", "faq"]
+        # Priority 1: auth.hbomax.com/set-new-password (exact reset link)
+        for raw in all_links:
+            link = raw.replace("&amp;", "&").replace("&#x3D;", "=")
+            ll = link.lower()
+            if any(s in ll for s in skip):
+                continue
+            if "set-new-password" in ll or "passwordresettoken" in ll:
+                return {"link": link}
+        # Priority 2: any hbo/max link with reset/password keywords
+        for raw in all_links:
+            link = raw.replace("&amp;", "&").replace("&#x3D;", "=")
+            ll = link.lower()
+            if any(s in ll for s in skip):
+                continue
+            if any(d in ll for d in ["hbomax.com", "max.com", "hbo.com"]):
+                if any(kw in ll for kw in ["password", "reset", "senha", "redefin", "set-new", "forgot"]):
+                    return {"link": link}
+        # NO FALLBACK
 
     # === NETFLIX LINK SERVICES (password_reset, household_update) ===
     if service in ("password_reset", "household_update"):
@@ -3084,6 +3118,7 @@ def search_and_extract(page, service: str, patterns: list, job_id: str, email_ad
         "prime_code": "from:amazon OR from:primevideo",
         "disney_code": "from:disney",
         "globo_reset": "from:globo OR from:globoplay",
+        "hbo_reset": "from:hbo OR from:max OR from:warnermedia",
     }
     search_term = SEARCH_TERMS.get(service, "from:netflix")
     search_brand = search_term.replace("from:", "").split(" OR ")[0].strip()
@@ -3509,7 +3544,7 @@ def process_job_api(job_id: str, email_addr: str, service: str) -> bool:
                     {"Term": {"DistinguishedFolderName": "DeletedItems"}},
                 ]},
                 "From": 0,
-                "Query": {"QueryString": {"password_reset": "Netflix", "household_update": "Netflix", "temp_code": "Netflix", "netflix_disconnect": "Netflix", "prime_code": "Amazon OR PrimeVideo", "disney_code": "Disney", "globo_reset": "Globo OR Globoplay"}.get(service, "Netflix")},
+                "Query": {"QueryString": {"password_reset": "Netflix", "household_update": "Netflix", "temp_code": "Netflix", "netflix_disconnect": "Netflix", "prime_code": "Amazon OR PrimeVideo", "disney_code": "Disney", "globo_reset": "Globo OR Globoplay", "hbo_reset": "HBO OR Max OR WarnerMedia"}.get(service, "Netflix")},
                 "Size": 15,
                 "Sort": [
                     {"Field": "Time", "SortDirection": "Desc"},
@@ -3542,6 +3577,7 @@ def process_job_api(job_id: str, email_addr: str, service: str) -> bool:
             "prime_code": ["amazon", "prime", "primevideo"],
             "disney_code": ["disney", "disneyplus"],
             "globo_reset": ["globo", "globoplay"],
+            "hbo_reset": ["hbo", "max", "warnermedia", "warner"],
         }
         brand_kws = BRAND_KEYWORDS.get(service, ["netflix"])
         
@@ -3804,6 +3840,7 @@ def gmail_search_and_extract(page, service: str, patterns: list, job_id: str) ->
         "prime_code": "from:(amazon OR primevideo) subject:(código OR code OR verification)",
         "disney_code": "from:disney subject:(código OR code OR verification)",
         "globo_reset": "from:(globo OR globoplay) subject:(redefinição OR reset OR senha OR password OR código OR code)",
+        "hbo_reset": "from:(hbo OR max OR warnermedia) subject:(senha OR password OR reset OR redefinição OR alteração)",
     }
     
     search_term = GMAIL_SEARCH_TERMS.get(service, "from:netflix")

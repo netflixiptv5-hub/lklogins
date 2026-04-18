@@ -55,7 +55,7 @@ app.post("/api/extract", (req, res) => {
   const { email, service } = req.body;
   if (!email || !service) return res.json({ ok: false, error: "Email e serviço são obrigatórios." });
 
-  const validServices = ["password_reset", "household_update", "temp_code", "netflix_disconnect", "prime_code", "disney_code", "globo_reset"];
+  const validServices = ["password_reset", "household_update", "temp_code", "netflix_disconnect", "prime_code", "disney_code", "globo_reset", "hbo_reset"];
   if (!validServices.includes(service)) return res.json({ ok: false, error: "Serviço inválido." });
 
   const jobId = generateJobId();
