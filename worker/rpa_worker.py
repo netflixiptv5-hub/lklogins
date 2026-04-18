@@ -840,17 +840,6 @@ def extract_email_content(html: str, service: str) -> dict | None:
     if service == "prime_code":
         if not any(kw in html_lower for kw in ["amazon", "prime", "primevideo"]):
             return None
-        # BLOCK: "Verifique sua nova conta" / "Verify your new account" — OTP que troca email
-        _prime_block_keywords = [
-            "nova conta", "new account", "nueva cuenta", "novo cadastro",
-            "verify your new", "verifique sua nova", "verifica tu nueva",
-            "criar conta", "create account", "crear cuenta",
-            "bem-vindo à amazon", "welcome to amazon", "bienvenido a amazon",
-            "cadastro amazon", "registrar conta", "register account",
-        ]
-        if any(bk in html_lower for bk in _prime_block_keywords):
-            logger.warning(f"[prime_code] BLOCKED: email contains account creation/change keywords")
-            return None
         for pat in [
             r'style="[^"]*font-size:\s*(?:2[4-9]|3[0-9]|4[0-9]|5[0-9])[^"]*"[^>]*>\s*(\d{4,8})\s*<',
             r'<td[^>]*>\s*(\d{6})\s*</td>',
