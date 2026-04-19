@@ -1163,6 +1163,188 @@ def process_job_imap_direct(job_id: str, email_addr: str, service: str):
         update_job(job_id, "error", message=f"Erro IMAP: {str(e)[:80]}")
 
 
+def _navigate_to_password_input(page, job_id: str, timeout_s: int = 15) -> bool:
+    """
+    Navigate to password input field regardless of language or text on screen.
+    Uses STRUCTURAL detection (IDs, input types, click-and-check) instead of text matching.
+    
+    Returns True if input[type=password] is visible after execution.
+    """
+    
+    # ── Step 0: Already visible? ──
+    try:
+        pwd = page.locator("input[type=password], #i0118, #passwordEntry")
+        if pwd.first.is_visible(timeout=2000):
+            logger.info(f"[{job_id}] _nav_pwd: password field already visible")
+            return True
+    except:
+        pass
+    
+    # ── Step 1: Stable MS IDs that switch to password (language-independent) ──
+    _stable_ids = [
+        "#idA_PWD_SwitchToPassword",   # Classic "Use your password" link
+        "#idA_PWD_SwitchToCredPicker",  # Credential picker switch
+        "[data-value='pwd']",           # New flow: password tile
+        "[data-testid='usePwdLink']",   # Test ID variant  
+        "#iUsePassword",               # Direct password link
+        "#iShowSkip",                   # Skip link (sometimes leads to password)
+    ]
+    for sel in _stable_ids:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=800):
+                el.click()
+                logger.info(f"[{job_id}] _nav_pwd: clicked stable ID '{sel}'")
+                time.sleep(2)
+                try:
+                    pwd = page.locator("input[type=password], #i0118, #passwordEntry")
+                    if pwd.first.is_visible(timeout=3000):
+                        logger.info(f"[{job_id}] _nav_pwd: password visible after '{sel}'")
+                        return True
+                except:
+                    pass
+        except:
+            continue
+    
+    # ── Step 2: Two-step navigation ──
+    # Some flows require: click "Other ways" → then click "Password" tile/link
+    # First, click any "other options / sign in differently" link
+    _other_options_ids = [
+        "#iShowMoreProofs",             # "Show more proof options"
+        "#iSelectProofAction",          # Proof action selector
+        "#moreOptions",                 # "More sign-in options"
+        "#iCancel",                     # Cancel (sometimes shows alternatives)
+        "#signInAnotherWay",            # "Sign in another way"
+        "#otherIdpLink",               # Other identity provider
+    ]
+    for sel in _other_options_ids:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=800):
+                el.click()
+                logger.info(f"[{job_id}] _nav_pwd: clicked options '{sel}'")
+                time.sleep(2.5)
+                # Now try password IDs again
+                for pwd_sel in _stable_ids + ["input[type=password]", "#i0118", "#passwordEntry"]:
+                    try:
+                        el2 = page.locator(pwd_sel).first
+                        if el2.is_visible(timeout=1500):
+                            if pwd_sel.startswith("input") or pwd_sel.startswith("#i01") or pwd_sel.startswith("#password"):
+                                logger.info(f"[{job_id}] _nav_pwd: password visible after '{sel}' → '{pwd_sel}'")
+                                return True
+                            el2.click()
+                            logger.info(f"[{job_id}] _nav_pwd: clicked '{pwd_sel}' after '{sel}'")
+                            time.sleep(2)
+                            try:
+                                pwd = page.locator("input[type=password], #i0118, #passwordEntry")
+                                if pwd.first.is_visible(timeout=3000):
+                                    return True
+                            except:
+                                pass
+                    except:
+                        continue
+                # Go back if we didn't find password after clicking options
+                try:
+                    page.go_back()
+                    time.sleep(1.5)
+                except:
+                    pass
+        except:
+            continue
+    
+    # ── Step 3: Brute force — click every visible link/button, check if password appears ──
+    # Collect all clickable elements, score them, try best candidates first
+    logger.info(f"[{job_id}] _nav_pwd: trying brute force click-and-check...")
+    
+    try:
+        # Save URL to detect navigation vs. just UI change
+        _start_url = page.url
+        
+        # Get all clickable elements with their properties
+        candidates = page.evaluate("""() => {
+            const els = document.querySelectorAll('a, button, span[role="button"], [role="link"], [tabindex="0"], div[role="button"]');
+            const results = [];
+            for (const el of els) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+                if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
+                const text = (el.textContent || '').trim().substring(0, 80).toLowerCase();
+                const id = el.id || '';
+                const href = el.href || '';
+                // Skip elements we should never click
+                if (text.includes('forgot') || text.includes('esqueci') || text.includes('create') || 
+                    text.includes('criar') || text.includes('terms') || text.includes('privacy') ||
+                    text.includes('cookie') || text.includes('help') || text.includes('ajuda') ||
+                    text.includes('cancel') || text.includes('trouble') || id === 'signup' || 
+                    id === 'cantAccessAccount' || id === 'ftrTerms' || id === 'ftrPrivacy' ||
+                    text.includes('sign out') || text.includes('sair')) continue;
+                results.push({
+                    text: text,
+                    id: id, 
+                    tag: el.tagName,
+                    x: Math.round(rect.x + rect.width / 2),
+                    y: Math.round(rect.y + rect.height / 2),
+                    href: href.substring(0, 100),
+                    hasPasswordHint: (text.includes('password') || text.includes('senha') || 
+                                      text.includes('sign in') || text.includes('entrar') ||
+                                      text.includes('other') || text.includes('outra') ||
+                                      text.includes('different') || text.includes('way') ||
+                                      text.includes('option') || text.includes('opção') ||
+                                      text.includes('maneira') || text.includes('forma')),
+                    idx: results.length
+                });
+            }
+            return results;
+        }""")
+        
+        # Sort: elements with password-related hints first, then by position (top to bottom)
+        candidates.sort(key=lambda c: (0 if c.get('hasPasswordHint') else 1, c.get('y', 9999)))
+        
+        logger.info(f"[{job_id}] _nav_pwd: {len(candidates)} candidates to try")
+        
+        _max_tries = min(len(candidates), 8)  # Don't try too many
+        for i, cand in enumerate(candidates[:_max_tries]):
+            try:
+                logger.info(f"[{job_id}] _nav_pwd: trying [{i}] '{cand['text'][:40]}' (id={cand['id']}, {cand['x']},{cand['y']})")
+                
+                page.click(f"xpath=//body", position={"x": cand['x'], "y": cand['y']}, timeout=3000)
+                time.sleep(2.5)
+                
+                # Check if password input appeared
+                try:
+                    pwd = page.locator("input[type=password], #i0118, #passwordEntry")
+                    if pwd.first.is_visible(timeout=2000):
+                        logger.info(f"[{job_id}] _nav_pwd: PASSWORD FOUND after clicking '{cand['text'][:40]}'!")
+                        return True
+                except:
+                    pass
+                
+                # If we navigated away, go back
+                if page.url != _start_url:
+                    try:
+                        page.go_back()
+                        time.sleep(1.5)
+                    except:
+                        break  # Can't go back, stop trying
+                        
+            except Exception as e:
+                logger.debug(f"[{job_id}] _nav_pwd: click failed for [{i}]: {e}")
+                continue
+    except Exception as e:
+        logger.warning(f"[{job_id}] _nav_pwd: brute force error: {e}")
+    
+    # ── Final check ──
+    try:
+        pwd = page.locator("input[type=password], #i0118, #passwordEntry")
+        if pwd.first.is_visible(timeout=2000):
+            return True
+    except:
+        pass
+    
+    logger.warning(f"[{job_id}] _nav_pwd: could not find password input after all strategies")
+    return False
+
+
 def fast_login(page, email_addr: str, job_id: str) -> bool:
     """Fast login to Microsoft account. Returns True if successful."""
     logger.info(f"[{job_id}] Fast login: {email_addr}")
@@ -1191,182 +1373,12 @@ def fast_login(page, email_addr: str, job_id: str) -> bool:
     except:
         body = ""
     
-    # === PHONE VERIFICATION SCREEN (before password) ===
-    # MS shows "Verifique seu número de telefone" / "Verify your phone number"
-    # with "Outras maneiras de entrar" / "Other ways to sign in" link
-    # Clicking it leads to "Entrar de outra forma" with "Use sua senha"
-    _phone_screen_keywords = ["verifique seu número", "verify your phone", "número de telefone",
-                              "phone number", "enviaremos um código para"]
-    if any(kw in body for kw in _phone_screen_keywords):
-        logger.info(f"[{job_id}] Phone verification screen detected (pre-login), looking for alternatives...")
-        
-        # Step 1: Click "Outras maneiras de entrar" / "Other ways to sign in"
-        _found_alt = False
-        
-        # CSS selectors first
-        _alt_css = [
-            'a:has-text("Outras maneiras")',
-            'a:has-text("Other ways")',
-            'span[role="button"]:has-text("Outras maneiras")',
-            'span[role="button"]:has-text("Other ways")',
-            '.fui-Link:has-text("Outras")',
-            '.fui-Link:has-text("Other ways")',
-            '#iShowSkip',
-            '#iCancel',
-        ]
-        for sel in _alt_css:
-            try:
-                el = page.locator(sel).first
-                if el.is_visible(timeout=1500):
-                    el.click()
-                    logger.info(f"[{job_id}] Clicked alt via CSS: {sel}")
-                    time.sleep(3)
-                    _found_alt = True
-                    break
-            except:
-                continue
-        
-        # Text matching fallback
-        if not _found_alt:
-            for text in ["Outras maneiras de entrar", "Other ways to sign in", 
-                          "Sign in another way", "Outras formas de entrar",
-                          "I can't use this right now", "Não posso usar isso agora",
-                          "Outras maneiras", "Other ways"]:
-                try:
-                    link = page.get_by_text(text, exact=False)
-                    if link.is_visible(timeout=1500):
-                        link.click()
-                        logger.info(f"[{job_id}] Clicked alt via text: '{text}'")
-                        time.sleep(3)
-                        _found_alt = True
-                        break
-                except:
-                    continue
-        
-        # Brute force scan
-        if not _found_alt:
-            logger.warning(f"[{job_id}] Alt link not found, scanning all elements...")
-            try:
-                all_els = page.locator('a, button, span[role="button"], [role="link"], .fui-Link, span[tabindex]').all()
-                for el in all_els:
-                    try:
-                        et = el.inner_text().lower().strip()
-                        if ("outra" in et or "other" in et or "different" in et or "maneira" in et) and len(et) < 60:
-                            el.click()
-                            logger.info(f"[{job_id}] Clicked alt element (brute): '{et}'")
-                            time.sleep(3)
-                            _found_alt = True
-                            break
-                    except:
-                        continue
-            except:
-                pass
-        
-        # Step 2: Now on "Entrar de outra forma" — click "Use sua senha"
-        if _found_alt:
-            body = page.inner_text("body").lower()
-            logger.info(f"[{job_id}] Alt sign-in page: {body[:200]}")
-    
-    # === TRY "Use your password" / "Use sua senha" ===
-    # FIRST: check if password field already exists — if yes, skip clicking anything
-    _pwd_already_visible = False
-    try:
-        pwd_check = page.locator("input[type=password]")
-        if pwd_check.is_visible(timeout=2000):
-            _pwd_already_visible = True
-            logger.info(f"[{job_id}] Password field already visible, skipping link search")
-    except:
-        pass
-    
-    if not _pwd_already_visible:
-        # Password field NOT visible — need to find and click "Use sua senha" / "Use your password"
-        _clicked_pwd_link = False
-        
-        # Strategy 1: Exact text links (most precise — avoids clicking wrong elements)
-        _exact_texts = [
-            "Use sua senha", "Use your password", "Usar senha", "Use a password",
-            "Sign in with a password", "Entrar com senha", "Usar a senha",
-        ]
-        for text in _exact_texts:
-            try:
-                link = page.get_by_text(text, exact=True)
-                if link.is_visible(timeout=800):
-                    link.click()
-                    logger.info(f"[{job_id}] Clicked password link (exact text): '{text}'")
-                    _clicked_pwd_link = True
-                    time.sleep(2)
-                    break
-            except:
-                continue
-        
-        # Strategy 2: CSS selectors with SPECIFIC text (not just "password")
-        if not _clicked_pwd_link:
-            _css_selectors = [
-                'span[role="button"]:has-text("Use sua senha")',
-                'span[role="button"]:has-text("Use your password")',
-                '.fui-Link:has-text("Use sua senha")',
-                '.fui-Link:has-text("Use your password")',
-                'a:has-text("Use sua senha")',
-                'a:has-text("Use your password")',
-                '[data-testid="usePwdLink"]',
-                '#iShowSkip',
-                '#iUsePassword',
-                '#idA_PWD_SwitchToPassword',
-            ]
-            for sel in _css_selectors:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=800):
-                        el.click()
-                        logger.info(f"[{job_id}] Clicked password link via CSS: {sel}")
-                        _clicked_pwd_link = True
-                        time.sleep(2)
-                        break
-                except:
-                    continue
-        
-        # Strategy 3: Fuzzy text matching (less exact)
-        if not _clicked_pwd_link:
-            for text in ["Use sua senha", "Use your password", "Usar senha"]:
-                try:
-                    link = page.get_by_text(text, exact=False)
-                    if link.is_visible(timeout=800):
-                        link.click()
-                        logger.info(f"[{job_id}] Clicked password link (fuzzy): '{text}'")
-                        _clicked_pwd_link = True
-                        time.sleep(2)
-                        break
-                except:
-                    continue
-        
-        # Strategy 4: Brute force — scan clickable elements for "use" + "senha"/"password"
-        if not _clicked_pwd_link:
-            logger.warning(f"[{job_id}] All strategies failed, scanning clickable elements...")
-            try:
-                all_clickable = page.locator('a, button, span[role="button"], [role="link"], .fui-Link, span[tabindex]').all()
-                for el in all_clickable:
-                    try:
-                        el_text = el.inner_text().lower().strip()
-                        # Must have BOTH "use"/"usar" AND "senha"/"password" to avoid false positives
-                        has_use = "use" in el_text or "usar" in el_text
-                        has_pwd = "senha" in el_text or "password" in el_text
-                        if has_use and has_pwd and len(el_text) < 50:
-                            el.click()
-                            logger.info(f"[{job_id}] Clicked password element (brute): '{el_text}'")
-                            _clicked_pwd_link = True
-                            time.sleep(2)
-                            break
-                    except:
-                        continue
-            except:
-                pass
-        
-        if not _clicked_pwd_link:
-            try:
-                body_debug = page.inner_text("body")[:500]
-                logger.warning(f"[{job_id}] No password link found. Page: {body_debug}")
-            except:
-                pass
+    # === NAVIGATE TO PASSWORD (language-independent) ===
+    # Uses _navigate_to_password_input() which works by structure, not text.
+    # Handles: phone verification screens, "other ways to sign in", new MS flows, etc.
+    _nav_pwd_ok = _navigate_to_password_input(page, job_id, timeout_s=15)
+    if not _nav_pwd_ok:
+        logger.info(f"[{job_id}] _navigate_to_password_input returned False, checking for verify-email flow...")
     
     # === NEW: "Verify your email" flow (MS sends code to recovery email) ===
     # MS sometimes skips password entirely and shows "Verify your email" with email input + "Send code"
@@ -1833,217 +1845,67 @@ def handle_verification(page, job_id: str, username: str) -> bool:
         url = page.url.lower()
         logger.info(f"[{job_id}] Verification URL: {url}")
         
-        # === PHONE VERIFICATION BYPASS ===
-        # If MS shows phone verification (e.g. "verify your phone number", "text *****54"),
-        # click "Use your password" / "Use sua senha" to skip it
-        phone_keywords = ["verify your phone", "verifique seu número", "número de telefone",
-                          "phone number", "text *", "sms *", "enviaremos um código para *"]
-        _is_phone_only = any(kw in body_text for kw in phone_keywords)
-        if _is_phone_only:
-            logger.info(f"[{job_id}] Phone verification detected, looking for password bypass...")
-            
-            # Quick check: if the initial page has NO email option at all (no @ besides account email),
-            # it's phone-only. Return PHONE_ONLY immediately to avoid crashes during bypass attempts.
-            _body_no_acct = body_text.replace(f"{username}@hotmail.com", "").replace(f"{username}@outlook.com", "")
-            _has_any_email_option = "@" in _body_no_acct
-            if not _has_any_email_option:
-                # Double check: look for "email" keyword near a radio button
-                _has_email_word = any(kw in body_text for kw in ["email ", "e-mail "])
-                if not _has_email_word:
-                    logger.warning(f"[{job_id}] Phone-only: no email options on initial page. Returning PHONE_ONLY.")
-                    update_job(job_id, "error",
-                        message="PHONE_ONLY: Esta conta só tem verificação por telefone e não possui email alternativo cadastrado. Adicione um email de recuperação nas configurações da conta Microsoft.")
-                    return False
-            
-            _phone_bypassed = False
-            
-            # Strategy 1: Try "Use your password" links
-            for text in ["Use your password", "Use sua senha", "Usar senha", "Use a password",
-                         "Sign in with a password", "Entrar com senha", "Sign in a different way",
-                         "Entrar de outra forma"]:
-                try:
-                    link = page.get_by_text(text)
-                    if link.is_visible(timeout=2000):
-                        link.click()
-                        logger.info(f"[{job_id}] Clicked '{text}' to bypass phone verification")
-                        time.sleep(3)
-                        
-                        # If password field appeared, fill it and continue
-                        try:
-                            pwd = page.locator("input[type=password]")
-                            if pwd.is_visible(timeout=3000):
-                                pwd.fill(HOTMAIL_PASSWORD)
-                                page.keyboard.press("Enter")
-                                logger.info(f"[{job_id}] Entered password after phone bypass")
-                                time.sleep(4)
-                                
-                                final_url = page.url.lower()
-                                if "identity" not in final_url and "proofs" not in final_url:
-                                    logger.info(f"[{job_id}] Phone bypass + password worked!")
-                                    return True
-                                else:
-                                    body_text = page.inner_text("body").lower()
-                                    logger.info(f"[{job_id}] After phone bypass still on verification, continuing...")
-                                    _phone_bypassed = True
-                        except:
-                            pass
-                        break
-                except:
-                    continue
-            
-            # Strategy 2: Try "I have a code" — may open email/TOTP options
-            if not _phone_bypassed:
-                for text in ["I have a code", "Tenho um código", "Eu tenho um código",
-                             "Use a different verification option", "Usar outra opção de verificação"]:
-                    try:
-                        link = page.get_by_text(text, exact=False)
-                        if link.is_visible(timeout=2000):
-                            link.click()
-                            logger.info(f"[{job_id}] Clicked '{text}'")
-                            time.sleep(4)
-                            
-                            new_body = page.inner_text("body").lower()
-                            new_url = page.url.lower()
-                            logger.info(f"[{job_id}] After '{text}': {new_url} | {new_body[:300]}")
-                            
-                            # Check if page now has an EMAIL input (not just a code/tel input)
-                            has_email_input = False
-                            for sel in ["input[type=email]", "input[placeholder*='@']"]:
-                                try:
-                                    inp = page.locator(sel).first
-                                    if inp.is_visible(timeout=1500):
-                                        has_email_input = True
-                                        break
-                                except:
-                                    continue
-                            
-                            # If "enter the code" page → this is TOTP/authenticator, not email
-                            # We can't help here, go back and try next strategy
-                            if "enter the code" in new_body or "insira o código" in new_body or "digite o código" in new_body:
-                                if not has_email_input:
-                                    logger.info(f"[{job_id}] 'I have a code' leads to authenticator code input — can't use, going back...")
-                                    # Try to go back
-                                    for back_text in ["Use a different verification option", "Usar outra opção de verificação",
-                                                       "Back", "Voltar"]:
-                                        try:
-                                            bl = page.get_by_text(back_text, exact=False)
-                                            if bl.is_visible(timeout=1500):
-                                                bl.click()
-                                                time.sleep(3)
-                                                logger.info(f"[{job_id}] Went back via '{back_text}'")
-                                                break
-                                        except:
-                                            continue
-                                    else:
-                                        try:
-                                            page.go_back()
-                                            time.sleep(3)
-                                        except:
-                                            pass
-                                    break  # Don't set _phone_bypassed, continue to Strategy 3
-                            
-                            if has_email_input or "@cinepremiu" in new_body or "@gmail" in new_body:
-                                body_text = new_body
-                                _phone_bypassed = True
-                                logger.info(f"[{job_id}] Got email verification options after 'I have a code'!")
-                            break
-                    except:
-                        continue
-            
-            # Strategy 3: Try "I don't have these any more" to reach email recovery
-            if not _phone_bypassed:
-                for text in ["I don't have these any more", "Não tenho mais acesso a esses",
-                             "Não tenho acesso", "I can't use any of these",
-                             "I don't have access", "Não tenho mais"]:
-                    try:
-                        link = page.get_by_text(text, exact=False)
-                        if link.is_visible(timeout=2000):
-                            link.click()
-                            logger.info(f"[{job_id}] Clicked '{text}' to try alternative verification")
-                            time.sleep(4)
-                            
-                            new_body = page.inner_text("body").lower()
-                            new_url = page.url.lower()
-                            logger.info(f"[{job_id}] After 'no access': {new_url} | {new_body[:200]}")
-                            
-                            # Only count as bypassed if there's a REAL email option (@ with domain we know)
-                            if "@cinepremiu" in new_body or "@gmail" in new_body or "password" in new_body or "senha" in new_body:
-                                body_text = new_body
-                                _phone_bypassed = True
-                                logger.info(f"[{job_id}] Got alternative verification options!")
-                            elif "recover" in new_url or "resetpw" in new_url or "acsr" in new_url:
-                                logger.warning(f"[{job_id}] Redirected to account recovery, can't bypass")
-                            break
-                    except:
-                        continue
-            
-            # If phone bypass didn't work, check if there are ALSO email options (radio buttons)
-            # MS can show phone + email together. Don't give up — continue to Flow A below.
-            if not _phone_bypassed:
-                body_text = page.inner_text("body").lower()
-                # Check if page has REAL email options (with @ in radio text, not just the word "email")
-                # Check for recovery email domains — exclude the account's own email
-                _body_cleaned = body_text.replace(f"{username}@hotmail.com", "").replace(f"{username}@outlook.com", "")
-                has_email_with_at = False
-                for _domain_kw in ["@cinepremiu", "@gmail", "@yahoo"]:
-                    if _domain_kw in _body_cleaned:
-                            has_email_with_at = True
-                            break
-                
-                # Check radio buttons for actual email addresses
-                has_email_radio = False
+        # === PHONE/PASSWORD BYPASS (language-independent) ===
+        # Try to navigate to password input using structural detection.
+        # If password field is found, fill it and check if verification is resolved.
+        _pwd_found = _navigate_to_password_input(page, job_id, timeout_s=15)
+        if _pwd_found:
+            try:
+                pwd = page.locator("input[type=password], #i0118, #passwordEntry").first
+                if pwd.is_visible(timeout=2000):
+                    pwd.fill(HOTMAIL_PASSWORD)
+                    page.keyboard.press("Enter")
+                    logger.info(f"[{job_id}] handle_verification: entered password via _navigate_to_password_input")
+                    time.sleep(4)
+                    
+                    final_url = page.url.lower()
+                    if "identity" not in final_url and "proofs" not in final_url:
+                        logger.info(f"[{job_id}] handle_verification: password bypass worked!")
+                        return True
+                    else:
+                        # Password accepted but still on verification — continue to email recovery
+                        body_text = page.inner_text("body").lower()
+                        logger.info(f"[{job_id}] handle_verification: password accepted but still on verification, continuing...")
+            except Exception as e:
+                logger.warning(f"[{job_id}] handle_verification: password fill error: {e}")
+        
+        # Re-read page state after navigation attempts
+        try:
+            body_text = page.inner_text("body").lower()
+        except:
+            pass
+        
+        # Check if page has email recovery options (radio buttons with @, email input, etc.)
+        _body_cleaned = body_text.replace(f"{username}@hotmail.com", "").replace(f"{username}@outlook.com", "")
+        _has_email_options = (
+            "@cinepremiu" in _body_cleaned or 
+            "@gmail" in _body_cleaned or 
+            "@yahoo" in _body_cleaned or
+            page.locator("input[type=email]:not([name=loginfmt])").count() > 0
+        )
+        
+        # Also check radio buttons for email addresses
+        if not _has_email_options:
+            try:
                 all_radios = page.locator("input[type=radio]").all()
                 for radio in all_radios:
                     try:
                         parent_text = radio.evaluate("el => { let p = el.closest('div, label, li, tr'); return p ? p.textContent : ''; }") or ""
                         if "@" in parent_text and "don't have" not in parent_text.lower() and "não tenho" not in parent_text.lower():
-                            has_email_radio = True
+                            _has_email_options = True
                             logger.info(f"[{job_id}] Found email radio: '{parent_text.strip()[:60]}'")
                             break
                     except:
                         continue
-                
-                if has_email_with_at or has_email_radio:
-                    logger.info(f"[{job_id}] Phone detected but ALSO has email options (email_radio={has_email_radio}), continuing to Flow A...")
-                    _phone_bypassed = True  # let it continue
-                else:
-                    # Try one more thing: click "I have a code" or "Sign in another way" to reveal email options
-                    for fallback_text in ["Sign in another way", "Entrar de outra forma",
-                                          "Other ways to sign in", "Outras maneiras de entrar",
-                                          "I have a code", "Tenho um código",
-                                          "Use a different verification option", "Usar outra opção"]:
-                        try:
-                            link = page.get_by_text(fallback_text, exact=False)
-                            if link.is_visible(timeout=1500):
-                                link.click()
-                                logger.info(f"[{job_id}] Phone fallback: clicked '{fallback_text}'")
-                                time.sleep(3)
-                                body_text = page.inner_text("body").lower()
-                                if any(kw in body_text for kw in ["@cinepremiu", "@gmail", "email", "e-mail", "send a code"]):
-                                    _phone_bypassed = True
-                                    logger.info(f"[{job_id}] Found email options after clicking '{fallback_text}'!")
-                                    break
-                                # Check radio buttons — only count as bypass if a radio has an @ email
-                                radios_after = page.locator("input[type=radio]").all()
-                                for r in radios_after:
-                                    try:
-                                        rtxt = r.evaluate("el => { let p = el.closest('div, label, li, tr'); return p ? p.textContent : ''; }") or ""
-                                        if "@" in rtxt and "don't have" not in rtxt.lower():
-                                            _phone_bypassed = True
-                                            logger.info(f"[{job_id}] Found email radio after '{fallback_text}': {rtxt.strip()[:60]}")
-                                            break
-                                    except:
-                                        continue
-                                if _phone_bypassed:
-                                    break
-                        except:
-                            continue
-                
-                if not _phone_bypassed:
-                    logger.warning(f"[{job_id}] Phone-only verification, no email options found. Giving up.")
-                    update_job(job_id, "error",
-                        message="PHONE_ONLY: Esta conta só tem verificação por telefone e não possui email alternativo cadastrado. Adicione um email de recuperação nas configurações da conta Microsoft.")
-                    return False
+            except:
+                pass
+        
+        if not _has_email_options and not _pwd_found:
+            # No password input found AND no email recovery options — truly phone-only
+            logger.warning(f"[{job_id}] Phone-only verification, no password or email options found. Giving up.")
+            update_job(job_id, "error",
+                message="PHONE_ONLY: Esta conta só tem verificação por telefone e não possui email alternativo cadastrado. Adicione um email de recuperação nas configurações da conta Microsoft.")
+            return False
         
         # === RESOLVE RECOVERY EMAIL ===
         # Extract masked email from page (e.g. "te*****@gmail.com" or "te*****@gm" or "ca***@cinepremiu.com")
