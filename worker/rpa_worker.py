@@ -1934,8 +1934,7 @@ def handle_post_login(page, job_id: str) -> str:
     if "verify your email" in body or "verificar seu email" in body or \
        "protect your account" in body or "proteja sua conta" in body or \
        "almost there" in body or "quase lá" in body or \
-       "just one more step" in body or "mais um passo" in body or \
-       "send a code to" in body or "enviar um código para" in body:
+       "just one more step" in body or "mais um passo" in body:
         logger.info(f"[{job_id}] Página de verificação detectada pelo conteúdo")
         return "verification"
     
