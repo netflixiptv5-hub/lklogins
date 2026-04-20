@@ -1252,85 +1252,6 @@ def _navigate_to_password_input(page, job_id: str, timeout_s: int = 15) -> bool:
         except:
             continue
     
-    # ── Step 2.5: Text-based "Other ways to sign in" → "Use your password" ──
-    # Some MS flows show a span/button with "Other ways to sign in" but NO id at all.
-    # After clicking it, "Use your password" appears as a new button.
-    try:
-        _other_texts = ["other ways", "sign in another way", "outras formas", "entrar de outra forma",
-                        "outra maneira", "other sign-in", "diferentes formas"]
-        other_btn = page.evaluate("""(texts) => {
-            const els = document.querySelectorAll('a, button, span, div[role="button"], [role="link"]');
-            for (const el of els) {
-                const rect = el.getBoundingClientRect();
-                if (rect.width === 0 || rect.height === 0) continue;
-                const t = (el.textContent || '').trim().toLowerCase();
-                for (const txt of texts) {
-                    if (t.includes(txt)) return {x: Math.round(rect.x + rect.width/2), y: Math.round(rect.y + rect.height/2), text: t.substring(0,60)};
-                }
-            }
-            return null;
-        }""", _other_texts)
-        
-        if other_btn:
-            logger.info(f"[{job_id}] _nav_pwd: Step2.5 clicking '{other_btn['text']}'")
-            page.click(f"xpath=//body", position={"x": other_btn['x'], "y": other_btn['y']}, timeout=3000)
-            time.sleep(2.5)
-            
-            # Check if password input appeared directly
-            try:
-                pwd = page.locator("input[type=password], #i0118, #passwordEntry")
-                if pwd.first.is_visible(timeout=2000):
-                    logger.info(f"[{job_id}] _nav_pwd: Step2.5 password visible directly")
-                    return True
-            except:
-                pass
-            
-            # Look for "Use your password" / "Usar sua senha" button
-            _pwd_texts = ["use your password", "use a password", "usar sua senha", "usar senha", "password"]
-            pwd_btn = page.evaluate("""(texts) => {
-                const els = document.querySelectorAll('a, button, span, div[role="button"], [role="link"]');
-                for (const el of els) {
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width === 0 || rect.height === 0) continue;
-                    const t = (el.textContent || '').trim().toLowerCase();
-                    for (const txt of texts) {
-                        if (t.includes(txt)) return {x: Math.round(rect.x + rect.width/2), y: Math.round(rect.y + rect.height/2), text: t.substring(0,60)};
-                    }
-                }
-                return null;
-            }""", _pwd_texts)
-            
-            if pwd_btn:
-                logger.info(f"[{job_id}] _nav_pwd: Step2.5 clicking '{pwd_btn['text']}'")
-                page.click(f"xpath=//body", position={"x": pwd_btn['x'], "y": pwd_btn['y']}, timeout=3000)
-                time.sleep(2.5)
-                try:
-                    pwd = page.locator("input[type=password], #i0118, #passwordEntry")
-                    if pwd.first.is_visible(timeout=3000):
-                        logger.info(f"[{job_id}] _nav_pwd: Step2.5 PASSWORD FOUND!")
-                        return True
-                except:
-                    pass
-            
-            # Try stable IDs again after "Other ways" was clicked
-            for sel in _stable_ids:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=800):
-                        el.click()
-                        time.sleep(2)
-                        try:
-                            pwd = page.locator("input[type=password], #i0118, #passwordEntry")
-                            if pwd.first.is_visible(timeout=3000):
-                                logger.info(f"[{job_id}] _nav_pwd: Step2.5 password after '{sel}'")
-                                return True
-                        except:
-                            pass
-                except:
-                    continue
-    except Exception as e:
-        logger.debug(f"[{job_id}] _nav_pwd: Step2.5 error: {e}")
-    
     # ── Step 3: Brute force — click every visible link/button, check if password appears ──
     # Collect all clickable elements, score them, try best candidates first
     logger.info(f"[{job_id}] _nav_pwd: trying brute force click-and-check...")
@@ -1397,37 +1318,6 @@ def _navigate_to_password_input(page, job_id: str, timeout_s: int = 15) -> bool:
                         return True
                 except:
                     pass
-                
-                # ── Sub-step: Screen changed but no password yet? Try NEW buttons that appeared ──
-                # This handles flows like: "Other ways" → "Use your password" (2-click chain)
-                if page.url == _start_url:
-                    try:
-                        sub_candidates = page.evaluate("""() => {
-                            const els = document.querySelectorAll('a, button, span[role="button"], [role="link"], [tabindex="0"], div[role="button"]');
-                            const results = [];
-                            for (const el of els) {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width === 0 || rect.height === 0) continue;
-                                if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
-                                const text = (el.textContent || '').trim().substring(0, 80).toLowerCase();
-                                if (text.includes('password') || text.includes('senha') || text.includes('use your') || text.includes('usar sua'))
-                                    results.push({text: text, x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2)});
-                            }
-                            return results;
-                        }""")
-                        for sc in sub_candidates:
-                            logger.info(f"[{job_id}] _nav_pwd: sub-click '{sc['text'][:40]}' ({sc['x']},{sc['y']})")
-                            page.click(f"xpath=//body", position={"x": sc['x'], "y": sc['y']}, timeout=3000)
-                            time.sleep(2.5)
-                            try:
-                                pwd = page.locator("input[type=password], #i0118, #passwordEntry")
-                                if pwd.first.is_visible(timeout=2000):
-                                    logger.info(f"[{job_id}] _nav_pwd: PASSWORD FOUND after sub-click '{sc['text'][:40]}'!")
-                                    return True
-                            except:
-                                pass
-                    except:
-                        pass
                 
                 # If we navigated away, go back
                 if page.url != _start_url:
