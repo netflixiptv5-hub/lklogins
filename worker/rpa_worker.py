@@ -3447,6 +3447,100 @@ def search_and_extract(page, service: str, patterns: list, job_id: str, email_ad
             logger.warning(f"[{job_id}] Item error: {e}")
             continue
     
+    # Try "Other" tab (Focused Inbox splits emails into "Focused" and "Other"/"Outros")
+    # Netflix emails often land in "Other" tab
+    if time.time() < _search_deadline:
+        logger.info(f"[{job_id}] Checking 'Other' tab (Focused Inbox)...")
+        try:
+            # Navigate back to inbox first
+            page.goto("https://outlook.live.com/mail/0/", timeout=8000, wait_until="domcontentloaded")
+            time.sleep(2)
+            
+            # Try to click "Other" / "Outros" tab
+            _clicked_other = False
+            for label in ["Other", "Outros", "Outra"]:
+                try:
+                    other_tab = page.locator(f"button:has-text('{label}'), [role='tab']:has-text('{label}'), span:has-text('{label}')").first
+                    if other_tab.is_visible(timeout=2000):
+                        other_tab.click()
+                        time.sleep(2)
+                        _clicked_other = True
+                        logger.info(f"[{job_id}] Clicked '{label}' tab")
+                        break
+                except:
+                    continue
+            
+            if not _clicked_other:
+                # Try via pivot/tab role
+                try:
+                    tabs = page.locator("[role='tab']").all()
+                    for tab in tabs:
+                        tab_text = (tab.text_content() or "").strip().lower()
+                        if tab_text in ["other", "outros", "outra"]:
+                            tab.click()
+                            time.sleep(2)
+                            _clicked_other = True
+                            logger.info(f"[{job_id}] Clicked Other tab via role")
+                            break
+                except:
+                    pass
+            
+            if _clicked_other:
+                # Now scan emails in "Other" tab
+                _other_items = []
+                for sel in ["[role='option']", "[data-convid]"]:
+                    items = page.locator(sel).all()
+                    if items:
+                        _other_items = items
+                        break
+                
+                logger.info(f"[{job_id}] 'Other' tab: {len(_other_items)} emails")
+                
+                for idx, item in enumerate(_other_items[:10]):
+                    if time.time() > _search_deadline:
+                        break
+                    try:
+                        text = ((item.text_content() or "") + " " + (item.get_attribute("aria-label") or "")).lower()
+                        if search_brand not in text and not any(p.lower() in text for p in patterns):
+                            continue
+                        
+                        logger.info(f"[{job_id}] Opening Other email #{idx}...")
+                        page.evaluate("() => document.querySelectorAll('[role=\"dialog\"], .ms-Overlay').forEach(el => el.remove())")
+                        item.evaluate("el => el.click()")
+                        time.sleep(3)
+                        
+                        body_html = None
+                        for wait_try in range(5):
+                            body_html = page.evaluate("""() => {
+                                for (const sel of ['[role="document"]', '.ReadingPaneContent', 
+                                    '[aria-label*="message body"]', '[aria-label*="corpo"]', '.wide-content-host']) {
+                                    const el = document.querySelector(sel);
+                                    if (el && el.innerHTML.length > 200) return el.innerHTML;
+                                }
+                                for (const iframe of document.querySelectorAll('iframe')) {
+                                    try {
+                                        const doc = iframe.contentDocument || iframe.contentWindow.document;
+                                        if (doc.body && doc.body.innerHTML.length > 200) return doc.body.innerHTML;
+                                    } catch(e) {}
+                                }
+                                return null;
+                            }""")
+                            if body_html:
+                                break
+                            time.sleep(1)
+                        
+                        if body_html:
+                            result = extract_netflix_link(body_html, service)
+                            if result:
+                                result["expired"] = False
+                                logger.info(f"[{job_id}] FOUND in 'Other' tab: {result}")
+                                return result
+                    except Exception as e:
+                        logger.debug(f"[{job_id}] Other tab item error: {e}")
+                        continue
+        except Exception as e:
+            logger.warning(f"[{job_id}] 'Other' tab error: {e}")
+    
     # Try Junk folder
     if time.time() > _search_deadline:
         logger.warning(f"[{job_id}] search_and_extract deadline exceeded, returning None")
